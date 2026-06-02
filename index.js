@@ -30,8 +30,8 @@ const { sendEmail } = require('./lib/send');
 const templates = require('./lib/templates');
 const ledger = require('./lib/ledger');
 const {
-  SENDER, FRONTDESK, ESCALATION_CC, CLINICIAN_EMAILS,
-  WINDOW_HOURS, ESCALATION_HOURS,
+  SENDER, FRONTDESK, ALWAYS_CC, CLINICIAN_EMAILS,
+  WINDOW_HOURS, ESCALATION_HOURS, DIGEST_HOUR, DIGEST_TO,
 } = require('./config');
 
 const CACHE_PATH = path.join(__dirname, 'data', 'appts.json');
@@ -91,7 +91,7 @@ async function dispatch(stage, it, now, sent, opts) {
     to = FRONTDESK;
     msg = templates.nag({ client: it.client, clinicianName: it.clinician, apptHuman, missing: it.missing });
   } else if (stage === 'escalation') {
-    to = FRONTDESK; cc = ESCALATION_CC;
+    to = FRONTDESK;
     msg = templates.escalation({ client: it.client, clinicianName: it.clinician, apptHuman, missing: it.missing, hoursLeft });
   } else { // confirm
     const tEmail = CLINICIAN_EMAILS[it.clinician];
@@ -99,6 +99,9 @@ async function dispatch(stage, it, now, sent, opts) {
     to = tEmail; cc = [FRONTDESK];
     msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
   }
+
+  // jesse@ on every email; dedupe and never cc the primary recipient.
+  cc = [...new Set([...cc, ...ALWAYS_CC])].filter(a => a !== to);
 
   let { subject } = msg;
   if (opts.test) { to = SENDER; cc = []; subject = `[TEST] ${subject}`; }
@@ -155,9 +158,11 @@ async function main() {
 
     // Phase B: per intake, read documents, classify, run the state machine.
     const sent = ledger.load();
+    const results = [];
     for (const it of intakes) {
       const rows = await tn.getDocumentTitles(page, it.patientId);
       const { hasSOD, hasGAINSS } = await classifyDocs(rows);
+      results.push({ client: it.client, clinician: it.clinician, start: it.start, hasSOD, hasGAINSS });
       const missing = [];
       if (!hasSOD) missing.push('SOD');
       if (!hasGAINSS) missing.push('GAINSS');
@@ -171,6 +176,27 @@ async function main() {
       } else {
         await dispatch('nag', { ...it, missing }, now, sent, opts);
       }
+    }
+
+    // Daily digest / heartbeat — once per day, first run at/after DIGEST_HOUR.
+    const digestKey = `digest@${tn.ymd(now)}T12:00:00.000Z#digest`;
+    if (now.getHours() >= DIGEST_HOUR && (opts.force || !sent.has(digestKey))) {
+      const tmrwYmd = tn.ymd(new Date(now.getTime() + 24 * HOUR));
+      const tmrw = results.filter(r => tn.ymd(r.start) === tmrwYmd).sort((a, b) => a.start - b.start);
+      const dateLabel = new Date(now.getTime() + 24 * HOUR).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      const { subject, html } = templates.digest({
+        ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+        dateLabel,
+        intakes: tmrw.map(r => ({
+          time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+          client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
+        })),
+      });
+      const to = opts.test ? SENDER : DIGEST_TO;
+      const subj = opts.test ? `[TEST] ${subject}` : subject;
+      console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
+      for (const i of tmrw) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
+      if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
     }
   } finally {
     await browser.close();

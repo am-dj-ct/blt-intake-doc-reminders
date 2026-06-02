@@ -10,6 +10,14 @@
 const SENDER = 'jesse@balancedlivingtherapy.com';
 const FRONTDESK = 'frontdesk@balancedlivingtherapy.com'; // Armaan / front desk
 const ESCALATION_CC = ['jesse@balancedlivingtherapy.com']; // CC'd on the 3h "still missing" escalation
+// jesse@ is CC'd on every email (nag, escalation, confirm) for oversight.
+const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
+
+// Daily digest / heartbeat: once a day, on the first hourly run at or after
+// this local hour, email jesse@ a summary of tomorrow's virtual intakes and
+// whether each already has its SOD and GAINSS. Confirms the system is alive.
+const DIGEST_HOUR = 8;
+const DIGEST_TO = SENDER;
 
 // Clinician display name (exactly as it appears in the TN schedule grid header)
 // -> work email. Copied from therapy-hours/config.js. Used to address the
@@ -64,6 +72,7 @@ module.exports = {
   SENDER,
   FRONTDESK,
   ESCALATION_CC,
+  ALWAYS_CC,
   CLINICIAN_EMAILS,
   TN_LOGIN_URL,
   TN_SCHEDULING_URL,
@@ -72,4 +81,6 @@ module.exports = {
   DOC_PATTERNS,
   WINDOW_HOURS,
   ESCALATION_HOURS,
+  DIGEST_HOUR,
+  DIGEST_TO,
 };
