@@ -1,0 +1,17 @@
+{
+  "name": "blt-intake-doc-reminders",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reminds front desk to collect SOD + GAINSS for virtual TherapyNotes intakes, escalates 3h before the session, and confirms to the therapist once both land.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dry": "node index.js --dry-run",
+    "test-mail": "node index.js --test",
+    "inspect": "node scripts/inspect-tn.js"
+  },
+  "dependencies": {
+    "openai": "^6.41.0",
+    "playwright": "^1.60.0"
+  }
+}
