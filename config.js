@@ -14,7 +14,7 @@ const ESCALATION_CC = ['jesse@balancedlivingtherapy.com']; // CC'd on the 3h "st
 const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
 
 // Daily digest / heartbeat: once a day, on the first hourly run at or after
-// this local hour, email jesse@ a summary of tomorrow's virtual intakes and
+// this local hour, email jesse@ a summary of today's virtual intakes and
 // whether each already has its SOD and GAINSS. Confirms the system is alive.
 const DIGEST_HOUR = 8;
 const DIGEST_TO = SENDER;

@@ -181,13 +181,13 @@ async function main() {
     // Daily digest / heartbeat — once per day, first run at/after DIGEST_HOUR.
     const digestKey = `digest@${tn.ymd(now)}T12:00:00.000Z#digest`;
     if (now.getHours() >= DIGEST_HOUR && (opts.force || !sent.has(digestKey))) {
-      const tmrwYmd = tn.ymd(new Date(now.getTime() + 24 * HOUR));
-      const tmrw = results.filter(r => tn.ymd(r.start) === tmrwYmd).sort((a, b) => a.start - b.start);
-      const dateLabel = new Date(now.getTime() + 24 * HOUR).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      const todayYmd = tn.ymd(now);
+      const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
+      const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
       const { subject, html } = templates.digest({
         ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
         dateLabel,
-        intakes: tmrw.map(r => ({
+        intakes: today.map(r => ({
           time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
           client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
         })),
@@ -195,7 +195,7 @@ async function main() {
       const to = opts.test ? SENDER : DIGEST_TO;
       const subj = opts.test ? `[TEST] ${subject}` : subject;
       console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-      for (const i of tmrw) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
+      for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
       if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
     }
   } finally {
