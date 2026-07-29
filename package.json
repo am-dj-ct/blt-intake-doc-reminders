@@ -8,7 +8,8 @@
     "start": "node index.js",
     "dry": "node index.js --dry-run",
     "test-mail": "node index.js --test",
-    "inspect": "node scripts/inspect-tn.js"
+    "inspect": "node scripts/inspect-tn.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "openai": "^6.41.0",

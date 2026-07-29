@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "note": "Local copy per spec (TN-ACCOUNT-SPEC-V4-2026-07-28.md, 'Registry'). Canonical will live in blt-hub's config/tn-account-registry.json; this repo's wrapper startup check (lib/tn-account-session.js, via pay-period-tracker's registry.assertRegistryMatch) compares its own job against this local copy when TN_ACCOUNT_SYSTEM=1. Registry changes go through PR.",
+  "jobs": {
+    "com.blt.intake-doc-reminders": {
+      "account": "blta",
+      "machine": "Alexs-Mac-mini.local",
+      "lockClass": "skip-if-busy"
+    }
+  }
+}
