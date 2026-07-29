@@ -29,6 +29,8 @@ const { classifyDocs } = require('./lib/classify');
 const { sendEmail } = require('./lib/send');
 const templates = require('./lib/templates');
 const ledger = require('./lib/ledger');
+const { loadBroker } = require('./lib/account-broker');
+const tnAccountSession = require('./lib/tn-account-session');
 const {
   SENDER, FRONTDESK, ALWAYS_CC, CLINICIAN_EMAILS,
   WINDOW_HOURS, ESCALATION_HOURS, DIGEST_HOUR, DIGEST_TO,
@@ -66,6 +68,72 @@ function saveCache(obj, now) {
   }
   fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
   fs.writeFileSync(CACHE_PATH, JSON.stringify(kept, null, 2));
+}
+
+// Open a TN browser session and get past login, dark-gated on
+// TN_ACCOUNT_SYSTEM. Flag off: identical to the old inline
+// tn.launch()+tn.login() — untouched behavior. Flag on: resolves the
+// pinned account via the broker (registry-checked), acquires the
+// per-account skip-if-busy lock around the WHOLE session, logs in through
+// the broker's login-safety marker wrapper, and asserts identity before
+// returning — all via lib/tn-account-session.js, never reimplemented here.
+// `deps` is test-injectable (broker/env/tn) so this is unit-testable
+// without a real pay-period-tracker checkout, Doppler, or TN.
+async function openTnSession(opts, deps = {}) {
+  const env = deps.env || process.env;
+  const tnLib = deps.tn || tn;
+  const enabled = (deps.tnAccountSession || tnAccountSession).isEnabled(env);
+
+  if (!enabled) {
+    const { browser, page } = await tnLib.launch({ headless: !opts.headful });
+    try {
+      await tnLib.login(page);
+    } catch (e) {
+      await browser.close();
+      throw e;
+    }
+    return { skip: false, page, release: () => browser.close() };
+  }
+
+  const session = deps.tnAccountSession || tnAccountSession;
+  const broker = deps.broker || loadBroker(env);
+  const { decision, dopplerReader } = await session.resolveAccount({ env, broker });
+  const resolved = decision.resolved;
+
+  const lockSession = await session.acquireSession({ account: resolved.account, broker, env, browserProfileDir: null });
+  if (!lockSession.ok) {
+    return { skip: true, reason: lockSession.reason };
+  }
+
+  let browser;
+  try {
+    const launched = await tnLib.launch({ headless: !opts.headful });
+    browser = launched.browser;
+    const page = launched.page;
+
+    const ownerCheck = lockSession.verifyStillOwner();
+    if (!ownerCheck.ok) {
+      throw new Error(`TN account lock ownership lost before browser launch (${ownerCheck.reason}).`);
+    }
+
+    await session.loginWithBroker({
+      page, broker, resolved, env, dopplerReader,
+      doLogin: (p, creds, o) => tnLib.login(p, creds, o),
+    });
+    await session.assertIdentityOrThrow({ page, broker, resolved });
+
+    return {
+      skip: false,
+      page,
+      release: async () => {
+        try { await browser.close(); } finally { await lockSession.release(); }
+      },
+    };
+  } catch (e) {
+    if (browser) await browser.close().catch(() => {});
+    await lockSession.release().catch(() => {});
+    throw e;
+  }
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
@@ -126,12 +194,16 @@ async function main() {
   const dates = [];
   for (let t = startOfDay(now).getTime(); t <= windowEnd.getTime(); t += 24 * HOUR) dates.push(tn.ymd(new Date(t)));
 
-  const { browser, page } = await tn.launch({ headless: !opts.headful });
+  const session = await openTnSession(opts);
+  if (session.skip) {
+    console.log(`\n[skip] TN account busy (skip-if-busy lock, reason=${session.reason || 'busy'}) — skipping this run cleanly; will retry next hourly pass.`);
+    console.log('\nDone.');
+    return;
+  }
+  const page = session.page;
   const cache = loadCache();
   const intakes = [];
   try {
-    await tn.login(page);
-
     // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
     for (const d of dates) {
       await tn.gotoDay(page, d);
@@ -199,9 +271,13 @@ async function main() {
       if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
     }
   } finally {
-    await browser.close();
+    await session.release();
   }
   console.log('\nDone.');
 }
 
-main().catch(err => { console.error('FAILED:', err.message); console.error(err.stack); process.exit(1); });
+module.exports = { openTnSession };
+
+if (require.main === module) {
+  main().catch(err => { console.error('FAILED:', err.message); console.error(err.stack); process.exit(1); });
+}
