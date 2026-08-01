@@ -9,6 +9,8 @@
     "dry": "node index.js --dry-run",
     "test-mail": "node index.js --test",
     "inspect": "node scripts/inspect-tn.js",
+    "install:mac": "./install-mac-launchagent.sh --install",
+    "preflight:mac": "./install-mac-launchagent.sh --check",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
