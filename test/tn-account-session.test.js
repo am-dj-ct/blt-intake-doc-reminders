@@ -71,11 +71,43 @@ test("bltj and malformed standard decisions fail before account lock use", async
 test("profile routing is private and limited to the two standard accounts", () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-profile-"));
   const profile = session.profileDirFor("blt2", base);
-  session.securePathTree(profile);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
   assert.equal(profile, path.join(base, "blt2", "browser-profile"));
   assert.equal(fs.statSync(path.join(base, "blt2")).mode & 0o777, 0o700);
   assert.equal(fs.statSync(profile).mode & 0o777, 0o700);
   assert.throws(() => session.profileDirFor("bltj", base), /non-standard/);
+});
+
+test("only the four reviewed direct Chrome symlinks are removed, and only after lock proof", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-transient-links-"));
+  const profile = session.profileDirFor("blta", base);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  for (const name of session.TRANSIENT_PROFILE_SYMLINKS) fs.symlinkSync("synthetic-target", path.join(profile, name));
+
+  assert.throws(() => session.securePathTree(profile), /verified account-lock ownership/);
+  for (const name of session.TRANSIENT_PROFILE_SYMLINKS) assert.equal(fs.lstatSync(path.join(profile, name)).isSymbolicLink(), true);
+
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  for (const name of session.TRANSIENT_PROFILE_SYMLINKS) assert.equal(fs.existsSync(path.join(profile, name)), false);
+
+  fs.symlinkSync("synthetic-target", path.join(profile, "UnreviewedLink"));
+  assert.throws(
+    () => session.securePathTree(profile, { lockOwnershipVerified: true }),
+    /unapproved symlink/,
+  );
+});
+
+test("reviewed Chrome symlink names are rejected outside the exact profile root", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-nested-link-"));
+  const profile = session.profileDirFor("blta", base);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  const nested = path.join(profile, "nested");
+  fs.mkdirSync(nested, { mode: 0o700 });
+  fs.symlinkSync("synthetic-target", path.join(nested, "SingletonLock"));
+  assert.throws(
+    () => session.securePathTree(profile, { lockOwnershipVerified: true }),
+    /unapproved symlink/,
+  );
 });
 
 test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
@@ -116,12 +148,15 @@ test("cleanup confirms context death before releasing the exact lock", async () 
     browser: { isConnected: () => connected, close: async () => { events.push("browser-close"); connected = false; } },
   };
   const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => { events.push("death-proof"); return { confirmed: true, stillAlive: [] }; } } });
-  const lockSession = { release: async () => { events.push("release"); return { ok: true }; } };
+  const lockSession = {
+    verifyStillOwner: () => { events.push("owner-check"); return { ok: true }; },
+    release: async () => { events.push("release"); return { ok: true }; },
+  };
   const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-cleanup-")));
-  session.securePathTree(profileDir);
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
   const result = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker, timeoutMs: 20 });
   assert.equal(result.confirmed, true);
-  assert.deepEqual(events, ["context-close", "death-proof", "release"]);
+  assert.deepEqual(events, ["context-close", "death-proof", "owner-check", "release"]);
 });
 
 test("unconfirmed browser death leaves the account lock held", async () => {
@@ -132,12 +167,15 @@ test("unconfirmed browser death leaves the account lock held", async () => {
   };
   const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: false, stillAlive: [12345] }) } });
   const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-unconfirmed-")));
-  session.securePathTree(profileDir);
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
   const result = await session.cleanupAndRelease({
     launched,
     profileDir,
     broker,
-    lockSession: { release: async () => { released = true; return { ok: true }; } },
+    lockSession: {
+      verifyStillOwner: () => ({ ok: true }),
+      release: async () => { released = true; return { ok: true }; },
+    },
     timeoutMs: 5,
   });
   assert.equal(result.confirmed, false);
@@ -153,15 +191,40 @@ test("a graceful-close error stays visible and cannot authorize failover", async
   };
   const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) } });
   const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-close-failed-")));
-  session.securePathTree(profileDir);
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
   const result = await session.cleanupAndRelease({
     launched,
     profileDir,
     broker,
-    lockSession: { release: async () => { released = true; return { ok: true }; } },
+    lockSession: {
+      verifyStillOwner: () => ({ ok: true }),
+      release: async () => { released = true; return { ok: true }; },
+    },
   });
   assert.equal(released, true);
   assert.equal(result.confirmed, false);
+});
+
+test("cleanup never traverses transient links after account-lock ownership is lost", async () => {
+  let connected = true;
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-lost-owner-")));
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
+  const transient = path.join(profileDir, "SingletonSocket");
+  fs.symlinkSync("synthetic-target", transient);
+  const result = await session.cleanupAndRelease({
+    launched: {
+      context: { close: async () => { connected = false; } },
+      browser: { isConnected: () => connected, close: async () => { connected = false; } },
+    },
+    profileDir,
+    broker: fakeBroker(),
+    lockSession: {
+      verifyStillOwner: () => ({ ok: false, reason: "not_current_owner" }),
+      release: async () => ({ ok: true }),
+    },
+  });
+  assert.equal(result.confirmed, false);
+  assert.equal(fs.lstatSync(transient).isSymbolicLink(), true);
 });
 
 test("only confirmed fresh-login rejection is eligible for same-run failover", () => {

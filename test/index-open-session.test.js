@@ -58,9 +58,16 @@ function harness({ accounts = ["blta"], loginFailures = [], identityFailure, bus
     acquireSession: async ({ account, browserProfileDir }) => {
       events.push(`acquire:${account}:${browserProfileDir}`);
       if (busy) return { ok: false, reason: "busy" };
-      return { ok: true, verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: true }) };
+      return {
+        ok: true,
+        verifyStillOwner: () => { events.push(`owner-check:${account}`); return { ok: true }; },
+        release: async () => ({ ok: true }),
+      };
     },
-    securePathTree: (profile) => events.push(`secure:${profile}`),
+    securePathTree: (profile, options) => {
+      assert.equal(options.lockOwnershipVerified, true);
+      events.push(`secure:${profile}`);
+    },
     ensureLogin: async ({ resolved }) => {
       events.push(`login:${resolved.account}`);
       const failure = loginFailures[resolution - 1];
@@ -93,6 +100,7 @@ test("a successful primary session opens under blta and cleans up once", async (
   assert.deepEqual(lane.events, [
     "resolve:blta",
     "acquire:blta:/synthetic/profiles/blta/browser-profile",
+    "owner-check:blta",
     "secure:/synthetic/profiles/blta/browser-profile",
     "launch:/synthetic/profiles/blta/browser-profile",
     "login:blta",
@@ -122,6 +130,7 @@ test("busy is a clean skip and never resolves or launches a second account", asy
   assert.deepEqual(result, { skip: true, reason: "busy" });
   assert.equal(lane.resolutions(), 1);
   assert.equal(lane.events.some((event) => event.startsWith("launch:")), false);
+  assert.equal(lane.events.some((event) => event.startsWith("owner-check:") || event.startsWith("secure:")), false);
 });
 
 test("cleanup failure blocks fresh-login failover", async () => {

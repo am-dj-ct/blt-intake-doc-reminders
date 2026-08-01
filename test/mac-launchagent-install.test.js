@@ -39,6 +39,7 @@ test("installer and runtime wrapper require exact app and broker attestations", 
   assert.match(installerSource, /verifyRuntimeCheckout/);
   assert.match(wrapper, /verify-runtime-checkout[.]js/);
   assert.match(wrapper, /export TN_ACCOUNT=blta/);
+  assert.match(wrapper, /doppler run --silent --no-fallback/);
   assert.doesNotMatch(wrapper, /PAY_PERIOD_TRACKER_ROOT|THERAPY_HOURS_TN_USERNAME|TN_USERNAME/);
   assert.equal(fs.existsSync(path.join(root, "com.blt.intake-doc-reminders.plist")), false);
 });

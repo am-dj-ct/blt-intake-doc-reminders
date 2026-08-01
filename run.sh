@@ -25,5 +25,5 @@ fi
 /opt/homebrew/opt/node@22/bin/node "$repo/scripts/verify-runtime-checkout.js" \
   --root "$broker_root" --head "$broker_head" --tree "$broker_tree" >/dev/null || exit 65
 
-exec /opt/homebrew/bin/doppler run -p agent-secrets -c dev -- \
+exec /opt/homebrew/bin/doppler run --silent --no-fallback -p agent-secrets -c dev -- \
   /opt/homebrew/opt/node@22/bin/node "$repo/index.js" "$@"

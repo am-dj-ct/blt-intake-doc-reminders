@@ -98,7 +98,7 @@ async function openTnSession(opts = {}, deps = {}) {
       if (!ownerCheck.ok) {
         throw new Error(`TN account lock ownership lost before browser launch (${ownerCheck.reason}).`);
       }
-      session.securePathTree(profileDir);
+      session.securePathTree(profileDir, { lockOwnershipVerified: true });
       launched = await tnLib.launch({ headless: !opts.headful, profileDir });
       await session.ensureLogin({ page: launched.page, broker, resolved, env, dopplerReader });
       await session.assertIdentityOrThrow({ page: launched.page, broker, resolved });
