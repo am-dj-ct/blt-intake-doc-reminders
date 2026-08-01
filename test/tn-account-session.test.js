@@ -1,181 +1,174 @@
-const { test } = require('node:test');
-const assert = require('node:assert/strict');
-const session = require('../lib/tn-account-session');
+"use strict";
 
-function fakeBroker(overrides = {}) {
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+const session = require("../lib/tn-account-session");
+
+function resolved(account = "blta") {
+  return { account, username: `synthetic-${account}`, password: "synthetic-password", practiceCode: "SYNTHETIC" };
+}
+
+function decision(account = "blta", requested = "blta") {
   return {
-    doppler: { createDopplerReader: () => async () => '', createDopplerWriter: () => async () => {} },
-    markers: {
-      cooldownActive: async () => false,
-      intentMarkerPresent: async () => false,
-      writeIntentMarker: async () => {},
-      applyLoginOutcome: async () => {},
-      ...overrides.markers,
-    },
-    loginSafety: {
-      // Mirrors the real classifyLoginOutcome semantics closely enough for
-      // this seam's own tests (production semantics live in and are tested
-      // by pay-period-tracker; we only verify OUR call shape here).
-      classifyLoginOutcome: ({ submitted, confirmedSuccess, confirmedRejection }) => {
-        if (!submitted) return 'pre_submit_failure';
-        if (confirmedSuccess && confirmedRejection) return 'post_submit_ambiguous';
-        if (confirmedSuccess) return 'confirmed_success';
-        if (confirmedRejection) return 'confirmed_rejection';
-        return 'post_submit_ambiguous';
-      },
-      ...overrides.loginSafety,
-    },
-    identityGate: {
-      assertIdentity: ({ observedUsername, expectedUsername }) => {
-        if (!observedUsername) return { ok: false, reason: 'identity_unreadable' };
-        if (observedUsername.toLowerCase() !== expectedUsername.toLowerCase()) {
-          return { ok: false, reason: 'identity_mismatch', observed: observedUsername, expected: expectedUsername };
-        }
-        return { ok: true };
-      },
-      ...overrides.identityGate,
-    },
-    readLoggedInUsername: overrides.readLoggedInUsername || (async () => 'blta'),
-    resolveAccountForRun: overrides.resolveAccountForRun,
-    acquireAccountSession: overrides.acquireAccountSession,
+    account,
+    resolved: resolved(account),
+    usedFallback: account !== requested,
+    lockClass: session.LOCK_CLASS,
   };
 }
 
-test('resolveAccount: TN_ACCOUNT unset -> broker rejects, no browser touched', async () => {
-  let called = false;
-  const broker = fakeBroker({
-    resolveAccountForRun: async () => {
-      called = true;
-      throw new Error('TN_ACCOUNT is required when TN_ACCOUNT_SYSTEM is on.');
+function fakeBroker(overrides = {}) {
+  return {
+    doppler: { createDopplerReader: () => async () => "", createDopplerWriter: () => async () => {} },
+    resolveAccountForRun: async () => decision(),
+    acquireAccountSession: async () => ({ ok: true, verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: true }) }),
+    therapyNotesLoginVisible: async () => false,
+    performAccountBrokerLogin: async () => {},
+    isTherapyNotesAppUrlFamily: () => true,
+    readLoggedInUsername: async () => "synthetic-blta",
+    identityGate: { assertIdentity: ({ observedUsername, expectedUsername }) => ({ ok: observedUsername === expectedUsername, reason: "identity_mismatch" }) },
+    lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) },
+    ...overrides,
+  };
+}
+
+test("broker mode is mandatory and legacy opt-out is refused", () => {
+  assert.equal(session.isEnabled({}), true);
+  assert.equal(session.isEnabled({ TN_ACCOUNT_SYSTEM: "1" }), true);
+  assert.throws(() => session.isEnabled({ TN_ACCOUNT_SYSTEM: "0" }), /retired/);
+});
+
+test("resolution accepts primary blta and broker fallback blt2", async () => {
+  for (const account of ["blta", "blt2"]) {
+    let seen;
+    const broker = fakeBroker({
+      resolveAccountForRun: async (options) => { seen = options; return decision(account); },
+    });
+    const result = await session.resolveAccount({ env: { TN_ACCOUNT: "blta" }, broker, machine: "Alexs-Mac-mini.local" });
+    assert.equal(result.decision.resolved.account, account);
+    assert.equal(seen.jobName, session.JOB_NAME);
+    assert.equal(seen.accountProfile, session.ACCOUNT_PROFILE);
+    assert.equal(seen.registryPath, session.REGISTRY_PATH);
+    assert.equal(seen.machine, "Alexs-Mac-mini.local");
+  }
+});
+
+test("bltj and malformed standard decisions fail before account lock use", async () => {
+  for (const malformed of [
+    { ...decision("bltj"), account: "bltj" },
+    { ...decision("blt2"), account: "blta" },
+    { ...decision("blt2"), usedFallback: false },
+    { ...decision("blta"), lockClass: "wait-with-timeout" },
+  ]) {
+    const broker = fakeBroker({ resolveAccountForRun: async () => malformed });
+    await assert.rejects(() => session.resolveAccount({ env: { TN_ACCOUNT: "blta" }, broker }), /invalid standard/);
+  }
+});
+
+test("profile routing is private and limited to the two standard accounts", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-profile-"));
+  const profile = session.profileDirFor("blt2", base);
+  session.securePathTree(profile);
+  assert.equal(profile, path.join(base, "blt2", "browser-profile"));
+  assert.equal(fs.statSync(path.join(base, "blt2")).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(profile).mode & 0o777, 0o700);
+  assert.throws(() => session.profileDirFor("bltj", base), /non-standard/);
+});
+
+test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
+  const navigations = [];
+  const page = { goto: async (url) => navigations.push(url) };
+  let submissions = 0;
+  const stored = fakeBroker({ therapyNotesLoginVisible: async () => false });
+  assert.deepEqual(await session.ensureLogin({ page, broker: stored, resolved: resolved(), env: {}, dopplerReader: async () => "" }), { freshLogin: false });
+  assert.equal(submissions, 0);
+
+  const fresh = fakeBroker({
+    therapyNotesLoginVisible: async () => true,
+    performAccountBrokerLogin: async (_page, config, target, options) => {
+      submissions += 1;
+      assert.equal(config.username, "synthetic-blta");
+      assert.equal(target, "https://www.therapynotes.com/app/scheduling/");
+      assert.equal(options.account, "blta");
+      assert.equal(options.isSuccessUrl("https://www.therapynotes.com/app/scheduling/#view=day"), true);
+      assert.equal(options.isSuccessUrl("https://www.therapynotes.com/app/patients/"), false);
     },
+    isTherapyNotesAppUrlFamily: (value, prefix) => new URL(value).pathname.startsWith(prefix),
   });
-  await assert.rejects(
-    () => session.resolveAccount({ env: {}, broker }),
-    /TN_ACCOUNT is required/,
-  );
-  assert.equal(called, true);
+  assert.deepEqual(await session.ensureLogin({ page, broker: fresh, resolved: resolved(), env: {}, dopplerReader: async () => "" }), { freshLogin: true });
+  assert.equal(submissions, 1);
+  assert.equal(navigations.length, 2);
 });
 
-test('resolveAccount: registry mismatch propagates and fails closed', async () => {
-  const broker = fakeBroker({
-    resolveAccountForRun: async () => {
-      throw new Error('TN account registry mismatch for job "com.blt.intake-doc-reminders": registry says "blta", wrapper is using "blt2".');
-    },
-  });
-  await assert.rejects(
-    () => session.resolveAccount({ env: { TN_ACCOUNT: 'blt2' }, broker }),
-    /registry mismatch/,
-  );
+test("identity mismatch is a terminal pre-work error", async () => {
+  const broker = fakeBroker({ readLoggedInUsername: async () => "different-account" });
+  await assert.rejects(() => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() }), /identity assertion failed/);
 });
 
-test('resolveAccount passes this job\'s name and local registry path to the broker', async () => {
-  let seen = null;
-  const broker = fakeBroker({
-    resolveAccountForRun: async (args) => { seen = args; return { resolved: { account: 'blta', username: 'blta' }, lockClass: 'skip-if-busy' }; },
-  });
-  await session.resolveAccount({ env: { TN_ACCOUNT: 'blta' }, broker, machine: 'Alexs-Mac-mini.local' });
-  assert.equal(seen.jobName, session.JOB_NAME);
-  assert.equal(seen.registryPath, session.REGISTRY_PATH);
-  assert.equal(seen.machine, 'Alexs-Mac-mini.local');
+test("cleanup confirms context death before releasing the exact lock", async () => {
+  const events = [];
+  let connected = true;
+  const launched = {
+    context: { close: async () => { events.push("context-close"); connected = false; } },
+    browser: { isConnected: () => connected, close: async () => { events.push("browser-close"); connected = false; } },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => { events.push("death-proof"); return { confirmed: true, stillAlive: [] }; } } });
+  const lockSession = { release: async () => { events.push("release"); return { ok: true }; } };
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-cleanup-")));
+  session.securePathTree(profileDir);
+  const result = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker, timeoutMs: 20 });
+  assert.equal(result.confirmed, true);
+  assert.deepEqual(events, ["context-close", "death-proof", "release"]);
 });
 
-test('acquireSession: skip-if-busy busy -> ok:false, caller must skip cleanly (no throw)', async () => {
-  const broker = fakeBroker({
-    acquireAccountSession: async (account, opts) => {
-      assert.equal(account, 'blta');
-      assert.equal(opts.lockClass, 'skip-if-busy');
-      return { ok: false, reason: 'busy' };
-    },
+test("unconfirmed browser death leaves the account lock held", async () => {
+  let released = false;
+  const launched = {
+    context: { close: async () => {} },
+    browser: { isConnected: () => true, close: async () => {} },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: false, stillAlive: [12345] }) } });
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-unconfirmed-")));
+  session.securePathTree(profileDir);
+  const result = await session.cleanupAndRelease({
+    launched,
+    profileDir,
+    broker,
+    lockSession: { release: async () => { released = true; return { ok: true }; } },
+    timeoutMs: 5,
   });
-  const result = await session.acquireSession({ account: 'blta', broker, env: {} });
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'busy');
+  assert.equal(result.confirmed, false);
+  assert.equal(released, false);
 });
 
-test('loginWithBroker: cooldown active -> refuses without writing a new intent marker', async () => {
-  let intentWritten = false;
-  const broker = fakeBroker({
-    markers: {
-      cooldownActive: async () => true,
-      intentMarkerPresent: async () => false,
-      writeIntentMarker: async () => { intentWritten = true; },
-      applyLoginOutcome: async () => {},
-    },
+test("a graceful-close error stays visible and cannot authorize failover", async () => {
+  let connected = true;
+  let released = false;
+  const launched = {
+    context: { close: async () => { throw new Error("close failed"); } },
+    browser: { isConnected: () => connected, close: async () => { connected = false; } },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) } });
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-close-failed-")));
+  session.securePathTree(profileDir);
+  const result = await session.cleanupAndRelease({
+    launched,
+    profileDir,
+    broker,
+    lockSession: { release: async () => { released = true; return { ok: true }; } },
   });
-  await assert.rejects(
-    () => session.loginWithBroker({ page: {}, broker, resolved: { account: 'blta', username: 'blta' }, env: {}, doLogin: async () => {} }),
-    /active login cooldown/,
-  );
-  assert.equal(intentWritten, false);
+  assert.equal(released, true);
+  assert.equal(result.confirmed, false);
 });
 
-test('loginWithBroker: successful login writes then clears intent, classifies confirmed_success', async () => {
-  const outcomes = [];
-  const broker = fakeBroker({
-    markers: {
-      cooldownActive: async () => false,
-      intentMarkerPresent: async () => false,
-      writeIntentMarker: async () => {},
-      applyLoginOutcome: async (account, outcome) => { outcomes.push(outcome); },
-    },
-  });
-  let onSubmitCalled = false;
-  await session.loginWithBroker({
-    page: {}, broker, resolved: { account: 'blta', username: 'blta' }, env: {},
-    doLogin: async (page, creds, { onSubmit }) => { onSubmit(); onSubmitCalled = true; },
-  });
-  assert.equal(onSubmitCalled, true);
-  assert.deepEqual(outcomes, ['confirmed_success']);
-});
-
-test('loginWithBroker: pre-submit throw classifies pre_submit_failure (no cooldown)', async () => {
-  const outcomes = [];
-  const broker = fakeBroker({
-    markers: {
-      cooldownActive: async () => false,
-      intentMarkerPresent: async () => false,
-      writeIntentMarker: async () => {},
-      applyLoginOutcome: async (account, outcome) => { outcomes.push(outcome); },
-    },
-  });
-  await assert.rejects(
-    () => session.loginWithBroker({
-      page: {}, broker, resolved: { account: 'blta', username: 'blta' }, env: {},
-      doLogin: async () => { throw new Error('TN login did not complete (still on /login/ after 30s).'); },
-    }),
-  );
-  assert.deepEqual(outcomes, ['pre_submit_failure']);
-});
-
-test('loginWithBroker: confirmed rejection after submit arms cooldown classification', async () => {
-  const outcomes = [];
-  const broker = fakeBroker({
-    markers: {
-      cooldownActive: async () => false,
-      intentMarkerPresent: async () => false,
-      writeIntentMarker: async () => {},
-      applyLoginOutcome: async (account, outcome) => { outcomes.push(outcome); },
-    },
-  });
-  await assert.rejects(
-    () => session.loginWithBroker({
-      page: {}, broker, resolved: { account: 'blta', username: 'blta' }, env: {},
-      doLogin: async (page, creds, { onSubmit }) => { onSubmit(); throw new Error('TN login rejected — check credentials in Doppler.'); },
-    }),
-  );
-  assert.deepEqual(outcomes, ['confirmed_rejection']);
-});
-
-test('assertIdentityOrThrow: mismatch throws before any read', async () => {
-  const broker = fakeBroker({ readLoggedInUsername: async () => 'blt2' });
-  await assert.rejects(
-    () => session.assertIdentityOrThrow({ page: {}, broker, resolved: { account: 'blta', username: 'blta' } }),
-    /identity assertion failed/,
-  );
-});
-
-test('assertIdentityOrThrow: match resolves', async () => {
-  const broker = fakeBroker({ readLoggedInUsername: async () => 'blta' });
-  const result = await session.assertIdentityOrThrow({ page: {}, broker, resolved: { account: 'blta', username: 'blta' } });
-  assert.equal(result.ok, true);
+test("only confirmed fresh-login rejection is eligible for same-run failover", () => {
+  assert.equal(session.retryableFreshLoginRejection({ code: "tn_account_prework_unavailable", loginOutcome: "confirmed_rejection" }), true);
+  for (const error of [
+    { code: "tn_account_prework_unavailable", loginOutcome: "post_submit_ambiguous" },
+    { code: "identity_mismatch", loginOutcome: "confirmed_rejection" },
+    new Error("ordinary failure"),
+  ]) assert.equal(session.retryableFreshLoginRejection(error), false);
 });

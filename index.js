@@ -70,70 +70,62 @@ function saveCache(obj, now) {
   fs.writeFileSync(CACHE_PATH, JSON.stringify(kept, null, 2));
 }
 
-// Open a TN browser session and get past login, dark-gated on
-// TN_ACCOUNT_SYSTEM. Flag off: identical to the old inline
-// tn.launch()+tn.login() — untouched behavior. Flag on: resolves the
-// pinned account via the broker (registry-checked), acquires the
-// per-account skip-if-busy lock around the WHOLE session, logs in through
-// the broker's login-safety marker wrapper, and asserts identity before
-// returning — all via lib/tn-account-session.js, never reimplemented here.
-// `deps` is test-injectable (broker/env/tn) so this is unit-testable
-// without a real pay-period-tracker checkout, Doppler, or TN.
-async function openTnSession(opts, deps = {}) {
+// Open a TN session through the exact reviewed broker. A confirmed rejection
+// from a fresh password submission may select the other standard account one
+// time, but only after this exact browser is dead and this exact lock release
+// is confirmed. Busy, cleanup, identity, and all post-open work never retry.
+async function openTnSession(opts = {}, deps = {}) {
   const env = deps.env || process.env;
   const tnLib = deps.tn || tn;
-  const enabled = (deps.tnAccountSession || tnAccountSession).isEnabled(env);
-
-  if (!enabled) {
-    const { browser, page } = await tnLib.launch({ headless: !opts.headful });
-    try {
-      await tnLib.login(page);
-    } catch (e) {
-      await browser.close();
-      throw e;
-    }
-    return { skip: false, page, release: () => browser.close() };
-  }
-
   const session = deps.tnAccountSession || tnAccountSession;
+  session.isEnabled(env);
   const broker = deps.broker || loadBroker(env);
-  const { decision, dopplerReader } = await session.resolveAccount({ env, broker });
-  const resolved = decision.resolved;
-
-  const lockSession = await session.acquireSession({ account: resolved.account, broker, env, browserProfileDir: null });
-  if (!lockSession.ok) {
-    return { skip: true, reason: lockSession.reason };
-  }
-
-  let browser;
-  try {
-    const launched = await tnLib.launch({ headless: !opts.headful });
-    browser = launched.browser;
-    const page = launched.page;
-
-    const ownerCheck = lockSession.verifyStillOwner();
-    if (!ownerCheck.ok) {
-      throw new Error(`TN account lock ownership lost before browser launch (${ownerCheck.reason}).`);
-    }
-
-    await session.loginWithBroker({
-      page, broker, resolved, env, dopplerReader,
-      doLogin: (p, creds, o) => tnLib.login(p, creds, o),
+  return broker.withPreWorkAccountFailover(async () => {
+    const { decision, dopplerReader } = await session.resolveAccount({ env, broker });
+    const resolved = decision.resolved;
+    const profileDir = session.profileDirFor(resolved.account);
+    const lockSession = await session.acquireSession({
+      account: resolved.account,
+      broker,
+      env,
+      browserProfileDir: profileDir,
     });
-    await session.assertIdentityOrThrow({ page, broker, resolved });
+    if (!lockSession.ok) return { skip: true, reason: lockSession.reason };
 
-    return {
-      skip: false,
-      page,
-      release: async () => {
-        try { await browser.close(); } finally { await lockSession.release(); }
-      },
-    };
-  } catch (e) {
-    if (browser) await browser.close().catch(() => {});
-    await lockSession.release().catch(() => {});
-    throw e;
-  }
+    let launched;
+    try {
+      const ownerCheck = lockSession.verifyStillOwner();
+      if (!ownerCheck.ok) {
+        throw new Error(`TN account lock ownership lost before browser launch (${ownerCheck.reason}).`);
+      }
+      session.securePathTree(profileDir);
+      launched = await tnLib.launch({ headless: !opts.headful, profileDir });
+      await session.ensureLogin({ page: launched.page, broker, resolved, env, dopplerReader });
+      await session.assertIdentityOrThrow({ page: launched.page, broker, resolved });
+
+      let released = false;
+      return {
+        skip: false,
+        page: launched.page,
+        account: resolved.account,
+        release: async () => {
+          if (released) return;
+          released = true;
+          const cleanup = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker });
+          if (!cleanup.confirmed) throw cleanup.error;
+        },
+      };
+    } catch (error) {
+      const cleanup = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker });
+      if (cleanup.confirmed && session.retryableFreshLoginRejection(error)) {
+        broker.confirmPreWorkFailoverCleanup(error, resolved.account);
+      }
+      if (!cleanup.confirmed) {
+        throw new AggregateError([error, cleanup.error], "TherapyNotes pre-work failure and cleanup both failed.", { cause: error });
+      }
+      throw error;
+    }
+  });
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }

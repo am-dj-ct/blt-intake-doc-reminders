@@ -26,7 +26,9 @@ Runs hourly (7am–8pm) on the Mac. Each run:
 
 Injected at runtime via `doppler run`. Present and working:
 
-- `THERAPY_HOURS_TN_USERNAME` / `THERAPY_HOURS_TN_PASSWORD` / `THERAPY_HOURS_TN_PRACTICE_CODE` — TherapyNotes login
+- The canonical TherapyNotes broker resolves the approved `blta` / `blt2`
+  account credentials at runtime. This repo never reads a legacy credential
+  file or chooses a third account.
 - `BLT_AZURE_OPENAI_ENDPOINT` / `BLT_AZURE_OPENAI_DEPLOYMENT` / `BLT_AZURE_OPENAI_API_KEY` — doc classifier
 
 **Still needed before live email can send** (not currently in Doppler):
@@ -63,12 +65,25 @@ Flags: `--dry-run`, `--test`, `--force` (ignore ledger), `--date YYYY-MM-DD` / `
 
 ## Scheduling (launchd)
 
+After the reviewed application commit is checked out and the reviewed broker
+commit has an immutable runtime install, pass their exact heads, trees, and
+broker root to the preflight and transactional installer:
+
 ```bash
-cp com.blt.intake-doc-reminders.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.blt.intake-doc-reminders.plist
-# logs: tail -f data/run.log
-# stop: launchctl unload ~/Library/LaunchAgents/com.blt.intake-doc-reminders.plist
+BLT_INTAKE_DOC_REMINDERS_EXPECTED_HEAD=<exact-app-head> \
+BLT_INTAKE_DOC_REMINDERS_EXPECTED_TREE=<exact-app-tree> \
+TN_ACCOUNT_BROKER_ROOT=/Users/alexmercer/.openclaw/runtime/therapynotes-ppt-<broker-head-12> \
+TN_ACCOUNT_BROKER_EXPECTED_HEAD=<exact-broker-head> \
+TN_ACCOUNT_BROKER_EXPECTED_TREE=<exact-broker-tree> \
+./install-mac-launchagent.sh --check
+
+# Run the same command with --install only after the preflight succeeds.
 ```
+
+The installer backs up the prior plist and loaded/disabled state, replaces it
+atomically, and verifies the result. Any failure rolls all three back and
+verifies that restoration before returning an error. Logs remain in
+`data/run.log`.
 
 Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCalendarInterval` array to change hours.
 
@@ -82,7 +97,7 @@ Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCa
 - `lib/ledger.js` — per-(patient+appt+stage) sent record (`data/sent.json`)
 - `config.js` — recipients, clinician→email map, CPT, timing
 - `scripts/` — `inspect-tn.js`, `check-docs.js`, `debug-login.js` (diagnostics)
-- `com.blt.intake-doc-reminders.plist`, `run.sh` — scheduling
+- `scripts/install-mac-launchagent.js`, `install-mac-launchagent.sh`, `run.sh` — reviewed scheduling and transactional cutover
 
 ## Tuning
 
