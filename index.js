@@ -129,6 +129,8 @@ async function openTnSession(opts = {}, deps = {}) {
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+// Calendar-day arithmetic, not fixed-ms — safe across DST transitions.
+function addLocalDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 0, 0, 0, 0); }
 function sameYmd(a, b) { return tn.ymd(a) === tn.ymd(b); }
 
 function humanAppt(start, now) {
@@ -182,9 +184,16 @@ async function main() {
   const windowEnd = new Date(now.getTime() + WINDOW_HOURS * HOUR);
   console.log(`=== BLT intake-doc reminder — now=${now.toISOString()} window=${WINDOW_HOURS}h ${opts.dryRun ? '[dry-run]' : ''}${opts.test ? '[test]' : ''} ===`);
 
-  // Dates spanning the window.
+  // Dates spanning the window. Stepped as calendar days (addLocalDays), not
+  // fixed 24h of milliseconds — a fixed-ms step can land twice on the same
+  // calendar date (or skip one) on a DST transition day, and the digest gate
+  // now depends on `dates` covering both today and tomorrow.
   const dates = [];
-  for (let t = startOfDay(now).getTime(); t <= windowEnd.getTime(); t += 24 * HOUR) dates.push(tn.ymd(new Date(t)));
+  for (let i = 0; ; i++) {
+    const day = addLocalDays(startOfDay(now), i);
+    if (day.getTime() > windowEnd.getTime()) break;
+    dates.push(tn.ymd(day));
+  }
 
   const session = await openTnSession(opts);
   if (session.skip) {
@@ -195,11 +204,26 @@ async function main() {
   const page = session.page;
   const cache = loadCache();
   const intakes = [];
+  // Full, unfiltered per-calendar-day scrape results (today + tomorrow), kept
+  // alongside the in-window `intakes` used for dispatch. The digest gate needs
+  // this because the 30h dispatch window can clip late-tomorrow or
+  // already-started-today appointments out of `intakes` — those aren't proof
+  // the day is empty, just proof they're outside the nag/escalation window.
+  const gridByDay = {};
   try {
     // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
     for (const d of dates) {
-      await tn.gotoDay(page, d);
+      const dayLoad = await tn.gotoDay(page, d);
       const grid = await tn.scrapeDayGrid(page);
+      // A load failure (dayLoad.ok === false), a still-filtered clinician
+      // view (dayLoad.coverageOk === false), and a genuinely empty day all
+      // scrape to []. Record both signals per day so the digest gate can
+      // tell a real empty day from one it just couldn't fully check.
+      const dayOk = !(dayLoad && dayLoad.ok === false);
+      const coverageOk = !(dayLoad && dayLoad.coverageOk === false);
+      gridByDay[d] = { grid, ok: dayOk && coverageOk };
+      if (!dayOk) console.log(`${d}: day load failed (${dayLoad.error && dayLoad.error.message || 'unknown error'}) — digest gate will treat this day as unprovable`);
+      else if (!coverageOk) console.log(`${d}: clinician view may still be filtered (coverage check failed) — digest gate will treat this day as unprovable`);
       const candidates = grid
         .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
         .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
@@ -246,21 +270,69 @@ async function main() {
     const digestKey = `digest@${tn.ymd(now)}T12:00:00.000Z#digest`;
     if (now.getHours() >= DIGEST_HOUR && (opts.force || !sent.has(digestKey))) {
       const todayYmd = tn.ymd(now);
+      const tomorrowYmd = tn.ymd(addLocalDays(now, 1));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
-      const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-      const { subject, html } = templates.digest({
-        ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-        dateLabel,
-        intakes: today.map(r => ({
-          time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-          client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
-        })),
-      });
-      const to = opts.test ? SENDER : DIGEST_TO;
-      const subj = opts.test ? `[TEST] ${subject}` : subject;
-      console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-      for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
-      if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+
+      // Affirmative-empty proof, not "the in-window counts happen to be zero":
+      // a full calendar day with zero scheduled/video appointments at all
+      // cannot contain an intake, so it's provably empty. A day is
+      // unprovable (forces send, never skip) when:
+      //   - it was never scraped this run (missing from gridByDay)
+      //   - its load failed (gotoDay's `ok: false`) — an empty scrape from a
+      //     failed load is not proof of an empty schedule
+      //   - its clinician view may still be filtered (`coverageOk: false`,
+      //     folded into `entry.ok` below) — an empty scrape from a partial
+      //     roster isn't proof either
+      //   - it has a scheduled appointment with unknown/undetermined
+      //     modality — can't rule that out as a virtual appointment
+      const dayVideoCount = (ymd) => {
+        const entry = gridByDay[ymd];
+        if (!entry || !entry.ok) return null;
+        const scheduled = entry.grid.filter(a => a.status === 'scheduled');
+        if (scheduled.some(a => a.modality == null || a.modality === '')) return null;
+        return scheduled.filter(a => a.modality === 'video').length;
+      };
+
+      // Check EVERY day actually scraped this run, not just today/tomorrow.
+      // A late run's 30h window can leave a sliver of the day after tomorrow
+      // in gridByDay (e.g. a ~19:00 run scrapes up to ~01:00 the day after
+      // next) — an ambiguous or non-empty appointment sitting in that sliver
+      // is just as real as one on today or tomorrow, and a two-day-only
+      // check would miss it entirely. today/tomorrow are still required to
+      // both have been scraped at all (a run that somehow skipped one of
+      // them can't claim to have proven anything).
+      const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
+      const everyScrapedDayEmpty = requiredDaysScraped &&
+        Object.keys(gridByDay).every(ymd => dayVideoCount(ymd) === 0);
+
+      // Missing docs, checked across the FULL scraped window, not just
+      // today/tomorrow. Every candidate the scrape finds anywhere in the
+      // window — including a day-after-tomorrow sliver — is already
+      // classified into `results`. A missing-doc candidate there is real and
+      // must not be missed just because it falls outside today/tomorrow.
+      const missingAnywhereInWindow = results.some(r => !r.hasSOD || !r.hasGAINSS);
+
+      const provablyEmpty = everyScrapedDayEmpty && !missingAnywhereInWindow;
+
+      if (provablyEmpty) {
+        console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
+        if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
+      } else {
+        const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const { subject, html } = templates.digest({
+          ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+          dateLabel,
+          intakes: today.map(r => ({
+            time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+            client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
+          })),
+        });
+        const to = opts.test ? SENDER : DIGEST_TO;
+        const subj = opts.test ? `[TEST] ${subject}` : subject;
+        console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
+        for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
+        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+      }
     }
   } finally {
     await session.release();
