@@ -274,35 +274,45 @@ async function main() {
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
 
       // Affirmative-empty proof, not "the in-window counts happen to be zero":
-      // a full calendar day (today or tomorrow) with zero scheduled/video
-      // appointments at all cannot contain an intake, so it's provably empty.
-      // Any of the following makes a day unprovable (returns null, not 0),
-      // which forces the gate to send rather than skip:
-      //   - the day was never scraped this run (missing from gridByDay)
-      //   - the day's load failed (gotoDay's `ok: false`) — an empty scrape
-      //     from a failed load is not proof of an empty schedule
-      //   - a scheduled appointment has unknown/undetermined modality — it
-      //     can't be ruled out as a virtual appointment
-      const possibleCount = (ymd) => {
+      // a full calendar day with zero scheduled/video appointments at all
+      // cannot contain an intake, so it's provably empty. A day is
+      // unprovable (forces send, never skip) when:
+      //   - it was never scraped this run (missing from gridByDay)
+      //   - its load failed (gotoDay's `ok: false`) — an empty scrape from a
+      //     failed load is not proof of an empty schedule
+      //   - its clinician view may still be filtered (`coverageOk: false`,
+      //     folded into `entry.ok` below) — an empty scrape from a partial
+      //     roster isn't proof either
+      //   - it has a scheduled appointment with unknown/undetermined
+      //     modality — can't rule that out as a virtual appointment
+      const dayVideoCount = (ymd) => {
         const entry = gridByDay[ymd];
         if (!entry || !entry.ok) return null;
         const scheduled = entry.grid.filter(a => a.status === 'scheduled');
         if (scheduled.some(a => a.modality == null || a.modality === '')) return null;
         return scheduled.filter(a => a.modality === 'video').length;
       };
-      const possibleToday = possibleCount(todayYmd);
-      const possibleTomorrow = possibleCount(tomorrowYmd);
+
+      // Check EVERY day actually scraped this run, not just today/tomorrow.
+      // A late run's 30h window can leave a sliver of the day after tomorrow
+      // in gridByDay (e.g. a ~19:00 run scrapes up to ~01:00 the day after
+      // next) — an ambiguous or non-empty appointment sitting in that sliver
+      // is just as real as one on today or tomorrow, and a two-day-only
+      // check would miss it entirely. today/tomorrow are still required to
+      // both have been scraped at all (a run that somehow skipped one of
+      // them can't claim to have proven anything).
+      const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
+      const everyScrapedDayEmpty = requiredDaysScraped &&
+        Object.keys(gridByDay).every(ymd => dayVideoCount(ymd) === 0);
 
       // Missing docs, checked across the FULL scraped window, not just
-      // today/tomorrow. A late run's 30h window can reach into the day after
-      // tomorrow (e.g. a ~19:00 first run), and every candidate the scrape
-      // finds anywhere in the window — including that day — is already
+      // today/tomorrow. Every candidate the scrape finds anywhere in the
+      // window — including a day-after-tomorrow sliver — is already
       // classified into `results`. A missing-doc candidate there is real and
-      // must not be missed just because it falls outside the two dates the
-      // intake-count check looks at.
+      // must not be missed just because it falls outside today/tomorrow.
       const missingAnywhereInWindow = results.some(r => !r.hasSOD || !r.hasGAINSS);
 
-      const provablyEmpty = possibleToday === 0 && possibleTomorrow === 0 && !missingAnywhereInWindow;
+      const provablyEmpty = everyScrapedDayEmpty && !missingAnywhereInWindow;
 
       if (provablyEmpty) {
         console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
