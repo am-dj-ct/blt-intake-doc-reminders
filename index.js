@@ -184,9 +184,16 @@ async function main() {
   const windowEnd = new Date(now.getTime() + WINDOW_HOURS * HOUR);
   console.log(`=== BLT intake-doc reminder — now=${now.toISOString()} window=${WINDOW_HOURS}h ${opts.dryRun ? '[dry-run]' : ''}${opts.test ? '[test]' : ''} ===`);
 
-  // Dates spanning the window.
+  // Dates spanning the window. Stepped as calendar days (addLocalDays), not
+  // fixed 24h of milliseconds — a fixed-ms step can land twice on the same
+  // calendar date (or skip one) on a DST transition day, and the digest gate
+  // now depends on `dates` covering both today and tomorrow.
   const dates = [];
-  for (let t = startOfDay(now).getTime(); t <= windowEnd.getTime(); t += 24 * HOUR) dates.push(tn.ymd(new Date(t)));
+  for (let i = 0; ; i++) {
+    const day = addLocalDays(startOfDay(now), i);
+    if (day.getTime() > windowEnd.getTime()) break;
+    dates.push(tn.ymd(day));
+  }
 
   const session = await openTnSession(opts);
   if (session.skip) {
@@ -206,9 +213,14 @@ async function main() {
   try {
     // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
     for (const d of dates) {
-      await tn.gotoDay(page, d);
+      const dayLoad = await tn.gotoDay(page, d);
       const grid = await tn.scrapeDayGrid(page);
-      gridByDay[d] = grid;
+      // A load failure (dayLoad.ok === false) and a genuinely empty day both
+      // scrape to []. Record load success per day so the digest gate can tell
+      // them apart instead of reading a failed load as proof of emptiness.
+      const dayOk = !(dayLoad && dayLoad.ok === false);
+      gridByDay[d] = { grid, ok: dayOk };
+      if (!dayOk) console.log(`${d}: day load failed (${dayLoad.error && dayLoad.error.message || 'unknown error'}) — digest gate will treat this day as unprovable`);
       const candidates = grid
         .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
         .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
@@ -261,13 +273,19 @@ async function main() {
       // Affirmative-empty proof, not "the in-window counts happen to be zero":
       // a full calendar day (today or tomorrow) with zero scheduled/video
       // appointments at all cannot contain an intake, so it's provably empty.
-      // If a day scraped video/scheduled appointments that fell outside the
-      // 30h dispatch window (and so were never classified/checked for docs),
-      // we cannot prove that day is empty — default to sending, not skipping.
+      // Any of the following makes a day unprovable (returns null, not 0),
+      // which forces the gate to send rather than skip:
+      //   - the day was never scraped this run (missing from gridByDay)
+      //   - the day's load failed (gotoDay's `ok: false`) — an empty scrape
+      //     from a failed load is not proof of an empty schedule
+      //   - a scheduled appointment has unknown/undetermined modality — it
+      //     can't be ruled out as a virtual appointment
       const possibleCount = (ymd) => {
-        const g = gridByDay[ymd];
-        if (!g) return null; // not scraped this run — can't prove anything
-        return g.filter(a => a.status === 'scheduled' && a.modality === 'video').length;
+        const entry = gridByDay[ymd];
+        if (!entry || !entry.ok) return null;
+        const scheduled = entry.grid.filter(a => a.status === 'scheduled');
+        if (scheduled.some(a => a.modality == null || a.modality === '')) return null;
+        return scheduled.filter(a => a.modality === 'video').length;
       };
       const possibleToday = possibleCount(todayYmd);
       const possibleTomorrow = possibleCount(tomorrowYmd);
