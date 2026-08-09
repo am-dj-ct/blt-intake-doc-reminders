@@ -129,6 +129,8 @@ async function openTnSession(opts = {}, deps = {}) {
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+// Calendar-day arithmetic, not fixed-ms — safe across DST transitions.
+function addLocalDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 0, 0, 0, 0); }
 function sameYmd(a, b) { return tn.ymd(a) === tn.ymd(b); }
 
 function humanAppt(start, now) {
@@ -195,11 +197,18 @@ async function main() {
   const page = session.page;
   const cache = loadCache();
   const intakes = [];
+  // Full, unfiltered per-calendar-day scrape results (today + tomorrow), kept
+  // alongside the in-window `intakes` used for dispatch. The digest gate needs
+  // this because the 30h dispatch window can clip late-tomorrow or
+  // already-started-today appointments out of `intakes` — those aren't proof
+  // the day is empty, just proof they're outside the nag/escalation window.
+  const gridByDay = {};
   try {
     // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
     for (const d of dates) {
       await tn.gotoDay(page, d);
       const grid = await tn.scrapeDayGrid(page);
+      gridByDay[d] = grid;
       const candidates = grid
         .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
         .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
@@ -246,12 +255,25 @@ async function main() {
     const digestKey = `digest@${tn.ymd(now)}T12:00:00.000Z#digest`;
     if (now.getHours() >= DIGEST_HOUR && (opts.force || !sent.has(digestKey))) {
       const todayYmd = tn.ymd(now);
-      const tomorrowYmd = tn.ymd(new Date(now.getTime() + 24 * HOUR));
+      const tomorrowYmd = tn.ymd(addLocalDays(now, 1));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
-      const tomorrowCount = results.filter(r => tn.ymd(r.start) === tomorrowYmd).length;
-      const missingCount = results.filter(r => !r.hasSOD || !r.hasGAINSS).length;
 
-      if (today.length === 0 && tomorrowCount === 0 && missingCount === 0) {
+      // Affirmative-empty proof, not "the in-window counts happen to be zero":
+      // a full calendar day (today or tomorrow) with zero scheduled/video
+      // appointments at all cannot contain an intake, so it's provably empty.
+      // If a day scraped video/scheduled appointments that fell outside the
+      // 30h dispatch window (and so were never classified/checked for docs),
+      // we cannot prove that day is empty — default to sending, not skipping.
+      const possibleCount = (ymd) => {
+        const g = gridByDay[ymd];
+        if (!g) return null; // not scraped this run — can't prove anything
+        return g.filter(a => a.status === 'scheduled' && a.modality === 'video').length;
+      };
+      const possibleToday = possibleCount(todayYmd);
+      const possibleTomorrow = possibleCount(tomorrowYmd);
+      const provablyEmpty = possibleToday === 0 && possibleTomorrow === 0;
+
+      if (provablyEmpty) {
         console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
         if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       } else {
