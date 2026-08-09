@@ -215,12 +215,15 @@ async function main() {
     for (const d of dates) {
       const dayLoad = await tn.gotoDay(page, d);
       const grid = await tn.scrapeDayGrid(page);
-      // A load failure (dayLoad.ok === false) and a genuinely empty day both
-      // scrape to []. Record load success per day so the digest gate can tell
-      // them apart instead of reading a failed load as proof of emptiness.
+      // A load failure (dayLoad.ok === false), a still-filtered clinician
+      // view (dayLoad.coverageOk === false), and a genuinely empty day all
+      // scrape to []. Record both signals per day so the digest gate can
+      // tell a real empty day from one it just couldn't fully check.
       const dayOk = !(dayLoad && dayLoad.ok === false);
-      gridByDay[d] = { grid, ok: dayOk };
+      const coverageOk = !(dayLoad && dayLoad.coverageOk === false);
+      gridByDay[d] = { grid, ok: dayOk && coverageOk };
       if (!dayOk) console.log(`${d}: day load failed (${dayLoad.error && dayLoad.error.message || 'unknown error'}) — digest gate will treat this day as unprovable`);
+      else if (!coverageOk) console.log(`${d}: clinician view may still be filtered (coverage check failed) — digest gate will treat this day as unprovable`);
       const candidates = grid
         .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
         .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
@@ -289,7 +292,17 @@ async function main() {
       };
       const possibleToday = possibleCount(todayYmd);
       const possibleTomorrow = possibleCount(tomorrowYmd);
-      const provablyEmpty = possibleToday === 0 && possibleTomorrow === 0;
+
+      // Missing docs, checked across the FULL scraped window, not just
+      // today/tomorrow. A late run's 30h window can reach into the day after
+      // tomorrow (e.g. a ~19:00 first run), and every candidate the scrape
+      // finds anywhere in the window — including that day — is already
+      // classified into `results`. A missing-doc candidate there is real and
+      // must not be missed just because it falls outside the two dates the
+      // intake-count check looks at.
+      const missingAnywhereInWindow = results.some(r => !r.hasSOD || !r.hasGAINSS);
+
+      const provablyEmpty = possibleToday === 0 && possibleTomorrow === 0 && !missingAnywhereInWindow;
 
       if (provablyEmpty) {
         console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
