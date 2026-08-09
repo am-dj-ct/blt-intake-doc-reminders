@@ -246,21 +246,30 @@ async function main() {
     const digestKey = `digest@${tn.ymd(now)}T12:00:00.000Z#digest`;
     if (now.getHours() >= DIGEST_HOUR && (opts.force || !sent.has(digestKey))) {
       const todayYmd = tn.ymd(now);
+      const tomorrowYmd = tn.ymd(new Date(now.getTime() + 24 * HOUR));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
-      const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-      const { subject, html } = templates.digest({
-        ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-        dateLabel,
-        intakes: today.map(r => ({
-          time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-          client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
-        })),
-      });
-      const to = opts.test ? SENDER : DIGEST_TO;
-      const subj = opts.test ? `[TEST] ${subject}` : subject;
-      console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-      for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
-      if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+      const tomorrowCount = results.filter(r => tn.ymd(r.start) === tomorrowYmd).length;
+      const missingCount = results.filter(r => !r.hasSOD || !r.hasGAINSS).length;
+
+      if (today.length === 0 && tomorrowCount === 0 && missingCount === 0) {
+        console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
+        if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
+      } else {
+        const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const { subject, html } = templates.digest({
+          ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+          dateLabel,
+          intakes: today.map(r => ({
+            time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+            client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
+          })),
+        });
+        const to = opts.test ? SENDER : DIGEST_TO;
+        const subj = opts.test ? `[TEST] ${subject}` : subject;
+        console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
+        for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
+        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+      }
     }
   } finally {
     await session.release();
