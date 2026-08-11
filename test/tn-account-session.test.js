@@ -205,6 +205,47 @@ test("a graceful-close error stays visible and cannot authorize failover", async
   assert.equal(result.confirmed, false);
 });
 
+test("a graceful-close timeout is cosmetic: confirmed stays false but safeToClose is true", async () => {
+  // context.close() never resolves -> bounded() times out. Death and lock
+  // release both succeed, so the run must not crash even though the polite
+  // close never finished.
+  const launched = {
+    context: { close: () => new Promise(() => {}) },
+    browser: { isConnected: () => false, close: async () => {} },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) } });
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-soft-close-")));
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
+  const result = await session.cleanupAndRelease({
+    launched,
+    profileDir,
+    broker,
+    lockSession: { verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: true }) },
+    timeoutMs: 20,
+  });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.safeToClose, true);
+  assert.match(result.error.message, /completed with errors/);
+});
+
+test("a lock-release failure is hard: safeToClose is false so the run still fails", async () => {
+  const launched = {
+    context: { close: async () => {} },
+    browser: { isConnected: () => false, close: async () => {} },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) } });
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-release-fail-")));
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
+  const result = await session.cleanupAndRelease({
+    launched,
+    profileDir,
+    broker,
+    lockSession: { verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: false, reason: "kill_unconfirmed" }) },
+  });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.safeToClose, false);
+});
+
 test("cleanup never traverses transient links after account-lock ownership is lost", async () => {
   let connected = true;
   const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-lost-owner-")));

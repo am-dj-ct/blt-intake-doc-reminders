@@ -112,7 +112,14 @@ async function openTnSession(opts = {}, deps = {}) {
           if (released) return;
           released = true;
           const cleanup = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker });
-          if (!cleanup.confirmed) throw cleanup.error;
+          if (!cleanup.confirmed) {
+            // Browser death and lock release are both confirmed — a graceful
+            // context/browser close that timed out is cosmetic, so warn and let
+            // the run finish cleanly instead of exiting non-zero over teardown
+            // that actually succeeded.
+            if (cleanup.safeToClose) { console.warn(`[cleanup] graceful browser close was imperfect but teardown is confirmed: ${cleanup.error?.message}`); return; }
+            throw cleanup.error;
+          }
         },
       };
     } catch (error) {
@@ -338,6 +345,21 @@ async function main() {
 
 module.exports = { openTnSession, digestSuppressible };
 
+// Print an error, then recurse into anything it bundles: AggregateError.errors
+// (cleanup collects several failures into one) and .cause chains. Without this
+// an "AggregateError: cleanup completed with errors." prints with no sign of
+// which step actually failed.
+function printErrorTree(err, seen = new Set(), depth = 0) {
+  if (!err || seen.has(err)) return;
+  seen.add(err);
+  const pad = '  '.repeat(depth);
+  console.error(`${pad}${err.stack || err}`);
+  if (Array.isArray(err.errors)) {
+    err.errors.forEach((sub, i) => { console.error(`${pad}[sub-error ${i}]`); printErrorTree(sub, seen, depth + 1); });
+  }
+  if (err.cause) { console.error(`${pad}[cause]`); printErrorTree(err.cause, seen, depth + 1); }
+}
+
 if (require.main === module) {
-  main().catch(err => { console.error('FAILED:', err.message); console.error(err.stack); process.exit(1); });
+  main().catch(err => { console.error('FAILED:', err.message); printErrorTree(err); process.exit(1); });
 }
