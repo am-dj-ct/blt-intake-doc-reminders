@@ -178,6 +178,28 @@ async function dispatch(stage, it, now, sent, opts) {
   console.log(`          sent.`);
 }
 
+// Decide whether the daily heartbeat digest can stay silent this run.
+//
+// Silence is allowed ONLY when the run can be trusted to have seen the whole
+// picture — today and tomorrow were both scraped and every scraped day loaded
+// cleanly (no failed load, no still-filtered clinician roster; both folded into
+// `entry.ok`) — AND there is genuinely nothing to report: zero in-window
+// intakes and zero missing docs.
+//
+// Keyed on INTAKES, never on raw video-appointment counts. A normal clinic day
+// is full of telehealth *therapy* sessions that are not intakes; the earlier
+// gate demanded a day with zero video appointments of any kind, which a working
+// practice never has, so the digest never went quiet. A broken or filtered
+// scrape always sends — surfacing that is the heartbeat's whole job.
+function digestSuppressible({ intakeCount, missingDocs, gridByDay, todayYmd, tomorrowYmd }) {
+  const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
+  const everyScrapedDayClean = Object.keys(gridByDay)
+    .every(ymd => Boolean(gridByDay[ymd] && gridByDay[ymd].ok));
+  const scrapeTrustworthy = requiredDaysScraped && everyScrapedDayClean;
+  const nothingToReport = intakeCount === 0 && !missingDocs;
+  return scrapeTrustworthy && nothingToReport;
+}
+
 async function main() {
   const opts = parseArgs();
   const now = opts.date ? new Date(`${opts.date}T${opts.time || '09:00'}:00`) : new Date();
@@ -273,49 +295,23 @@ async function main() {
       const tomorrowYmd = tn.ymd(addLocalDays(now, 1));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
 
-      // Affirmative-empty proof, not "the in-window counts happen to be zero":
-      // a full calendar day with zero scheduled/video appointments at all
-      // cannot contain an intake, so it's provably empty. A day is
-      // unprovable (forces send, never skip) when:
-      //   - it was never scraped this run (missing from gridByDay)
-      //   - its load failed (gotoDay's `ok: false`) — an empty scrape from a
-      //     failed load is not proof of an empty schedule
-      //   - its clinician view may still be filtered (`coverageOk: false`,
-      //     folded into `entry.ok` below) — an empty scrape from a partial
-      //     roster isn't proof either
-      //   - it has a scheduled appointment with unknown/undetermined
-      //     modality — can't rule that out as a virtual appointment
-      const dayVideoCount = (ymd) => {
-        const entry = gridByDay[ymd];
-        if (!entry || !entry.ok) return null;
-        const scheduled = entry.grid.filter(a => a.status === 'scheduled');
-        if (scheduled.some(a => a.modality == null || a.modality === '')) return null;
-        return scheduled.filter(a => a.modality === 'video').length;
-      };
-
-      // Check EVERY day actually scraped this run, not just today/tomorrow.
-      // A late run's 30h window can leave a sliver of the day after tomorrow
-      // in gridByDay (e.g. a ~19:00 run scrapes up to ~01:00 the day after
-      // next) — an ambiguous or non-empty appointment sitting in that sliver
-      // is just as real as one on today or tomorrow, and a two-day-only
-      // check would miss it entirely. today/tomorrow are still required to
-      // both have been scraped at all (a run that somehow skipped one of
-      // them can't claim to have proven anything).
-      const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
-      const everyScrapedDayEmpty = requiredDaysScraped &&
-        Object.keys(gridByDay).every(ymd => dayVideoCount(ymd) === 0);
-
-      // Missing docs, checked across the FULL scraped window, not just
-      // today/tomorrow. Every candidate the scrape finds anywhere in the
-      // window — including a day-after-tomorrow sliver — is already
-      // classified into `results`. A missing-doc candidate there is real and
-      // must not be missed just because it falls outside today/tomorrow.
+      // Missing docs are checked across the FULL scraped window, not just
+      // today/tomorrow: every in-window candidate the scrape finds anywhere —
+      // including a day-after-tomorrow sliver — is already classified into
+      // `results`, and a missing doc there is real regardless of which day it
+      // falls on.
       const missingAnywhereInWindow = results.some(r => !r.hasSOD || !r.hasGAINSS);
 
-      const provablyEmpty = everyScrapedDayEmpty && !missingAnywhereInWindow;
+      const provablyEmpty = digestSuppressible({
+        intakeCount: intakes.length,
+        missingDocs: missingAnywhereInWindow,
+        gridByDay,
+        todayYmd,
+        tomorrowYmd,
+      });
 
       if (provablyEmpty) {
-        console.log('[digest] skipped — nothing to report (0 intakes today, 0 tomorrow, 0 missing)');
+        console.log('[digest] skipped — nothing to report (0 intakes in window, 0 missing docs, today+tomorrow scraped clean)');
         if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       } else {
         const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
@@ -340,7 +336,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession };
+module.exports = { openTnSession, digestSuppressible };
 
 if (require.main === module) {
   main().catch(err => { console.error('FAILED:', err.message); console.error(err.stack); process.exit(1); });
