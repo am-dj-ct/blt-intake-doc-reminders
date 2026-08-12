@@ -27,7 +27,7 @@ function exactCheckout(name, root, expectedHead, expectedTree) {
 
 function intervals() {
   return Array.from({ length: 14 }, (_, index) => index + 7)
-    .map((hour) => `    <dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>0</integer></dict>`)
+    .map((hour) => `    <dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>35</integer></dict>`)
     .join("\n");
 }
 
