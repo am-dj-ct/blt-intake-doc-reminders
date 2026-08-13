@@ -190,21 +190,20 @@ async function dispatch(stage, it, now, sent, opts) {
 // Silence is allowed ONLY when the run can be trusted to have seen the whole
 // picture — today and tomorrow were both scraped and every scraped day loaded
 // cleanly (no failed load, no still-filtered clinician roster; both folded into
-// `entry.ok`) — AND there is genuinely nothing to report: zero in-window
-// intakes and zero missing docs.
+// `entry.ok`) — AND there is genuinely nothing to report: zero intakes TODAY.
 //
-// Keyed on INTAKES, never on raw video-appointment counts. A normal clinic day
-// is full of telehealth *therapy* sessions that are not intakes; the earlier
-// gate demanded a day with zero video appointments of any kind, which a working
-// practice never has, so the digest never went quiet. A broken or filtered
-// scrape always sends — surfacing that is the heartbeat's whole job.
-function digestSuppressible({ intakeCount, missingDocs, gridByDay, todayYmd, tomorrowYmd }) {
+// Keyed on TODAY's intakes only. The digest body only ever describes today, so
+// an intake sitting tomorrow (even one with missing docs — that already fires
+// its own nag/escalation email, cc'd to Jesse) must not force a send: doing so
+// produced a "no virtual intakes today" email on every quiet day that happened
+// to precede a busy one. A broken or filtered scrape still always sends —
+// surfacing that is the heartbeat's whole job.
+function digestSuppressible({ todayIntakeCount, gridByDay, todayYmd, tomorrowYmd }) {
   const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
   const everyScrapedDayClean = Object.keys(gridByDay)
     .every(ymd => Boolean(gridByDay[ymd] && gridByDay[ymd].ok));
   const scrapeTrustworthy = requiredDaysScraped && everyScrapedDayClean;
-  const nothingToReport = intakeCount === 0 && !missingDocs;
-  return scrapeTrustworthy && nothingToReport;
+  return scrapeTrustworthy && todayIntakeCount === 0;
 }
 
 async function main() {
@@ -302,23 +301,15 @@ async function main() {
       const tomorrowYmd = tn.ymd(addLocalDays(now, 1));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
 
-      // Missing docs are checked across the FULL scraped window, not just
-      // today/tomorrow: every in-window candidate the scrape finds anywhere —
-      // including a day-after-tomorrow sliver — is already classified into
-      // `results`, and a missing doc there is real regardless of which day it
-      // falls on.
-      const missingAnywhereInWindow = results.some(r => !r.hasSOD || !r.hasGAINSS);
-
       const provablyEmpty = digestSuppressible({
-        intakeCount: intakes.length,
-        missingDocs: missingAnywhereInWindow,
+        todayIntakeCount: today.length,
         gridByDay,
         todayYmd,
         tomorrowYmd,
       });
 
       if (provablyEmpty) {
-        console.log('[digest] skipped — nothing to report (0 intakes in window, 0 missing docs, today+tomorrow scraped clean)');
+        console.log('[digest] skipped — no virtual intakes today, today+tomorrow scraped clean');
         if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       } else {
         const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
