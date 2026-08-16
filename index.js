@@ -100,8 +100,11 @@ async function openTnSession(opts = {}, deps = {}) {
       }
       session.securePathTree(profileDir, { lockOwnershipVerified: true });
       launched = await tnLib.launch({ headless: !opts.headful, profileDir });
-      await session.ensureLogin({ page: launched.page, broker, resolved, env, dopplerReader });
-      await session.assertIdentityOrThrow({ page: launched.page, broker, resolved });
+      // One call, deliberately: login, identity, and releasing the intent
+      // marker the login wrote. Running the first two and forgetting the
+      // third is the defect this replaced -- it leaked a blta marker every
+      // hour for nine days.
+      await session.ensureLoginAndIdentity({ page: launched.page, broker, resolved, env, dopplerReader });
 
       let released = false;
       return {

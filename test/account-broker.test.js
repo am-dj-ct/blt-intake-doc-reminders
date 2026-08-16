@@ -41,6 +41,7 @@ function modules() {
     performAccountBrokerLogin: async () => {},
     readLoggedInUsername: async () => "synthetic",
     isTherapyNotesAppUrlFamily: () => true,
+    confirmAccountBrokerLoginUsable: async () => {},
   };
   return { broker, schedule };
 }
