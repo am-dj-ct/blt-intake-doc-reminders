@@ -29,7 +29,22 @@ function fakeBroker(overrides = {}) {
     performAccountBrokerLogin: async () => {},
     isTherapyNotesAppUrlFamily: () => true,
     readLoggedInUsername: async () => "synthetic-blta",
-    identityGate: { assertIdentity: ({ observedUsername, expectedUsername }) => ({ ok: observedUsername === expectedUsername, reason: "identity_mismatch" }) },
+    // Mirrors the PINNED broker's tn-account-identity-gate.js exactly: trims
+    // both sides, compares case-insensitively, and distinguishes an
+    // unreadable identity from a mismatched one. The previous stub used
+    // strict equality and always reported identity_mismatch, so a test could
+    // not tell those two apart -- and identity_unreadable is precisely the
+    // failure the schedule lane hit on 2026-08-16.
+    identityGate: {
+      assertIdentity: ({ observedUsername, expectedUsername }) => {
+        const observed = String(observedUsername || "").trim();
+        const expected = String(expectedUsername || "").trim();
+        if (!observed) return { ok: false, reason: "identity_unreadable" };
+        if (!expected) return { ok: false, reason: "expected_username_missing" };
+        if (observed.toLowerCase() !== expected.toLowerCase()) return { ok: false, reason: "identity_mismatch", observed, expected };
+        return { ok: true, observed, expected };
+      },
+    },
     lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) },
     ...overrides,
   };
@@ -275,4 +290,92 @@ test("only confirmed fresh-login rejection is eligible for same-run failover", (
     { code: "identity_mismatch", loginOutcome: "confirmed_rejection" },
     new Error("ordinary failure"),
   ]) assert.equal(session.retryableFreshLoginRejection(error), false);
+});
+
+// --- Intent-marker release (2026-08-16) ---------------------------------
+//
+// Counted on 2026-08-16: /Users/Shared/blt/tn-accounts holds 81
+// `auto-cleared-dead-pid` archives, 72 of them this job (69 blta, 3 blt2),
+// since 2026-08-07. Only runs that performed a FRESH password login leak;
+// a reused stored session writes no marker, which is why the count is
+// roughly half the number of runs rather than all of them.
+//
+// The broker writes an intent marker before submitting a password and does
+// NOT clear it on success: the caller must confirm, and only after its own
+// identity check passes. This repo never made that call, so every hourly run
+// left a blta marker for the next resolution attempt to reclaim as a dead
+// pid -- around ninety archived `auto-cleared-dead-pid` files between
+// 2026-08-07 and 2026-08-16, all from this job.
+
+function markerBroker(overrides = {}) {
+  const confirms = [];
+  const broker = fakeBroker({
+    confirmAccountBrokerLoginUsable: async (account, options) => confirms.push({ account, options }),
+    ...overrides,
+  });
+  return { broker, confirms };
+}
+
+test("a fresh login releases its own intent marker, after identity passes", async () => {
+  const { broker, confirms } = markerBroker({
+    therapyNotesLoginVisible: async () => true,
+    performAccountBrokerLogin: async () => {},
+    isTherapyNotesAppUrlFamily: () => true,
+  });
+  const page = { goto: async () => {} };
+  const env = { SYNTHETIC: "1" };
+  const dopplerReader = async () => "";
+  const now = new Date("2026-08-16T21:00:00Z");
+  const result = await session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env, dopplerReader, now });
+
+  assert.equal(result.freshLogin, true);
+  assert.equal(confirms.length, 1, "the marker this run wrote must be released");
+  assert.equal(confirms[0].account, "blta");
+  // The arguments matter as much as the call: the pinned helper reads and
+  // rewrites marker state through exactly these, so a call with the wrong
+  // env, reader, writer or clock clears nothing while looking successful.
+  assert.equal(confirms[0].options.jobName, session.JOB_NAME);
+  assert.equal(confirms[0].options.env, env);
+  assert.equal(confirms[0].options.dopplerReader, dopplerReader);
+  assert.equal(typeof confirms[0].options.dopplerWriter, "function");
+  assert.equal(confirms[0].options.now, now, "login and confirmation must share one instant");
+});
+
+test("a reused stored session releases nothing -- it never wrote a marker", async () => {
+  const { broker, confirms } = markerBroker({ therapyNotesLoginVisible: async () => false });
+  const page = { goto: async () => {} };
+  const result = await session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env: {}, dopplerReader: async () => "" });
+
+  assert.equal(result.freshLogin, false);
+  assert.deepEqual(confirms, [], "confirming a marker this run does not own could clear another job's");
+});
+
+test("a failed identity assertion keeps the marker, which is the safety property", async () => {
+  // This is deliberately NOT an exit trap. A login whose identity could not
+  // be verified must keep looking consumed to the next job invocation.
+  const { broker, confirms } = markerBroker({
+    therapyNotesLoginVisible: async () => true,
+    performAccountBrokerLogin: async () => {},
+    isTherapyNotesAppUrlFamily: () => true,
+    readLoggedInUsername: async () => "",
+  });
+  const page = { goto: async () => {} };
+  await assert.rejects(
+    () => session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env: {}, dopplerReader: async () => "" }),
+    /identity assertion failed/,
+  );
+  assert.deepEqual(confirms, [], "an unverified login must not release its marker");
+});
+
+test("a login that throws never reaches the release", async () => {
+  const { broker, confirms } = markerBroker({
+    therapyNotesLoginVisible: async () => true,
+    performAccountBrokerLogin: async () => {
+      throw new Error("TherapyNotes login was rejected.");
+    },
+    isTherapyNotesAppUrlFamily: () => true,
+  });
+  const page = { goto: async () => {} };
+  await assert.rejects(() => session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env: {}, dopplerReader: async () => "" }));
+  assert.deepEqual(confirms, []);
 });

@@ -68,14 +68,16 @@ function harness({ accounts = ["blta"], loginFailures = [], identityFailure, bus
       assert.equal(options.lockOwnershipVerified, true);
       events.push(`secure:${profile}`);
     },
-    ensureLogin: async ({ resolved }) => {
+    // Mirrors the real lib/tn-account-session.js sequencing: login, identity,
+    // then release the marker the login wrote -- and NOT the release when
+    // either of the first two threw.
+    ensureLoginAndIdentity: async ({ resolved }) => {
       events.push(`login:${resolved.account}`);
       const failure = loginFailures[resolution - 1];
       if (failure) throw failure;
-    },
-    assertIdentityOrThrow: async ({ resolved }) => {
       events.push(`identity:${resolved.account}`);
       if (identityFailure) throw identityFailure;
+      events.push(`confirm-marker:${resolved.account}`);
     },
     cleanupAndRelease: async ({ profileDir }) => {
       events.push(`cleanup:${profileDir}`);
@@ -105,6 +107,7 @@ test("a successful primary session opens under blta and cleans up once", async (
     "launch:/synthetic/profiles/blta/browser-profile",
     "login:blta",
     "identity:blta",
+    "confirm-marker:blta",
     "cleanup:/synthetic/profiles/blta/browser-profile",
   ]);
 });
@@ -121,6 +124,15 @@ test("confirmed fresh-login rejection retries once on blt2 only after cleanup", 
   const secondResolveIndex = lane.events.indexOf("resolve:blt2");
   assert.ok(cleanupIndex >= 0 && cleanupIndex < retryIndex && retryIndex < secondResolveIndex);
   assert.equal(lane.resolutions(), 2);
+  // The account that actually succeeded must reach identity AND release its
+  // marker. blta's failed login correctly releases nothing -- that marker is
+  // supposed to survive an unverified login.
+  assert.deepEqual(
+    lane.events.filter((event) => event.startsWith("confirm-marker:")),
+    ["confirm-marker:blt2"],
+    JSON.stringify(lane.events),
+  );
+  assert.equal(lane.events.includes("identity:blt2"), true);
   await opened.release();
 });
 
