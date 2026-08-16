@@ -124,6 +124,15 @@ test("confirmed fresh-login rejection retries once on blt2 only after cleanup", 
   const secondResolveIndex = lane.events.indexOf("resolve:blt2");
   assert.ok(cleanupIndex >= 0 && cleanupIndex < retryIndex && retryIndex < secondResolveIndex);
   assert.equal(lane.resolutions(), 2);
+  // The account that actually succeeded must reach identity AND release its
+  // marker. blta's failed login correctly releases nothing -- that marker is
+  // supposed to survive an unverified login.
+  assert.deepEqual(
+    lane.events.filter((event) => event.startsWith("confirm-marker:")),
+    ["confirm-marker:blt2"],
+    JSON.stringify(lane.events),
+  );
+  assert.equal(lane.events.includes("identity:blt2"), true);
   await opened.release();
 });
 

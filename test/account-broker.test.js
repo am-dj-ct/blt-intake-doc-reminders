@@ -76,6 +76,10 @@ test("loadBroker verifies the exact checkout before requiring canonical modules"
   const broker = loadBroker(env(), deps);
   assert.equal(typeof broker.withPreWorkAccountFailover, "function");
   assert.equal(typeof broker.performAccountBrokerLogin, "function");
+  // The marker-release API must actually come back out of the loader. Without
+  // this assertion the whole loader change could be reverted and every test
+  // here would still pass.
+  assert.equal(typeof broker.confirmAccountBrokerLoginUsable, "function");
   assert.deepEqual(events.map(([name]) => name), ["attest", "verify"]);
   assert.equal(events[1][1].expectedHead, head);
   assert.equal(events[1][1].expectedTree, tree);
@@ -91,6 +95,19 @@ test("missing canonical APIs fail closed", () => {
   assert.throws(() => loadBroker(env(), testDeps({
     requireFn: (target) => target.endsWith("tn-account-broker.js") ? fake.broker : fake.schedule,
   })), /missing withPreWorkAccountFailover/);
+});
+
+test("a pinned runtime without the marker-release API is refused at load", () => {
+  // Five of the installed runtimes under ~/.openclaw/runtime predate this
+  // function. Failing closed is the point: a silent fallback would put the
+  // job straight back to leaking a marker per fresh login, with nothing to
+  // notice. (The runtime this job actually pins, therapynotes-ppt-763d086c1dd7,
+  // exports it -- verified before this requirement was added.)
+  const fake = modules();
+  delete fake.schedule.confirmAccountBrokerLoginUsable;
+  assert.throws(() => loadBroker(env(), testDeps({
+    requireFn: (target) => target.endsWith("tn-account-broker.js") ? fake.broker : fake.schedule,
+  })), /missing confirmAccountBrokerLoginUsable/);
 });
 
 test("frozen runtime attestation refuses writable state and symlinks", () => {

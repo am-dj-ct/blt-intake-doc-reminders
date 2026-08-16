@@ -102,8 +102,8 @@ async function openTnSession(opts = {}, deps = {}) {
       launched = await tnLib.launch({ headless: !opts.headful, profileDir });
       // One call, deliberately: login, identity, and releasing the intent
       // marker the login wrote. Running the first two and forgetting the
-      // third is the defect this replaced -- it leaked a blta marker every
-      // hour for nine days.
+      // third is the defect this replaced -- it leaked a marker on every run
+      // that performed a fresh password login, for nine days.
       await session.ensureLoginAndIdentity({ page: launched.page, broker, resolved, env, dopplerReader });
 
       let released = false;

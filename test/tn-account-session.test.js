@@ -29,7 +29,22 @@ function fakeBroker(overrides = {}) {
     performAccountBrokerLogin: async () => {},
     isTherapyNotesAppUrlFamily: () => true,
     readLoggedInUsername: async () => "synthetic-blta",
-    identityGate: { assertIdentity: ({ observedUsername, expectedUsername }) => ({ ok: observedUsername === expectedUsername, reason: "identity_mismatch" }) },
+    // Mirrors the PINNED broker's tn-account-identity-gate.js exactly: trims
+    // both sides, compares case-insensitively, and distinguishes an
+    // unreadable identity from a mismatched one. The previous stub used
+    // strict equality and always reported identity_mismatch, so a test could
+    // not tell those two apart -- and identity_unreadable is precisely the
+    // failure the schedule lane hit on 2026-08-16.
+    identityGate: {
+      assertIdentity: ({ observedUsername, expectedUsername }) => {
+        const observed = String(observedUsername || "").trim();
+        const expected = String(expectedUsername || "").trim();
+        if (!observed) return { ok: false, reason: "identity_unreadable" };
+        if (!expected) return { ok: false, reason: "expected_username_missing" };
+        if (observed.toLowerCase() !== expected.toLowerCase()) return { ok: false, reason: "identity_mismatch", observed, expected };
+        return { ok: true, observed, expected };
+      },
+    },
     lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) },
     ...overrides,
   };
@@ -279,6 +294,12 @@ test("only confirmed fresh-login rejection is eligible for same-run failover", (
 
 // --- Intent-marker release (2026-08-16) ---------------------------------
 //
+// Counted on 2026-08-16: /Users/Shared/blt/tn-accounts holds 81
+// `auto-cleared-dead-pid` archives, 72 of them this job (69 blta, 3 blt2),
+// since 2026-08-07. Only runs that performed a FRESH password login leak;
+// a reused stored session writes no marker, which is why the count is
+// roughly half the number of runs rather than all of them.
+//
 // The broker writes an intent marker before submitting a password and does
 // NOT clear it on success: the caller must confirm, and only after its own
 // identity check passes. This repo never made that call, so every hourly run
@@ -302,13 +323,22 @@ test("a fresh login releases its own intent marker, after identity passes", asyn
     isTherapyNotesAppUrlFamily: () => true,
   });
   const page = { goto: async () => {} };
-  const result = await session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env: {}, dopplerReader: async () => "" });
+  const env = { SYNTHETIC: "1" };
+  const dopplerReader = async () => "";
+  const now = new Date("2026-08-16T21:00:00Z");
+  const result = await session.ensureLoginAndIdentity({ page, broker, resolved: resolved(), env, dopplerReader, now });
 
   assert.equal(result.freshLogin, true);
   assert.equal(confirms.length, 1, "the marker this run wrote must be released");
   assert.equal(confirms[0].account, "blta");
+  // The arguments matter as much as the call: the pinned helper reads and
+  // rewrites marker state through exactly these, so a call with the wrong
+  // env, reader, writer or clock clears nothing while looking successful.
   assert.equal(confirms[0].options.jobName, session.JOB_NAME);
+  assert.equal(confirms[0].options.env, env);
+  assert.equal(confirms[0].options.dopplerReader, dopplerReader);
   assert.equal(typeof confirms[0].options.dopplerWriter, "function");
+  assert.equal(confirms[0].options.now, now, "login and confirmation must share one instant");
 });
 
 test("a reused stored session releases nothing -- it never wrote a marker", async () => {
