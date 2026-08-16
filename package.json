@@ -11,7 +11,7 @@
     "inspect": "node scripts/inspect-tn.js",
     "install:mac": "./install-mac-launchagent.sh --install",
     "preflight:mac": "./install-mac-launchagent.sh --check",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js test/*.test.mjs"
   },
   "dependencies": {
     "openai": "^6.41.0",
