@@ -224,6 +224,16 @@ function reportRunHealth(verdict, env = process.env) {
   catch (e) { console.warn(`[sentinel] could not write health verdict (${e.message}) — non-fatal`); }
 }
 
+// The TN-account-busy skip exits 0 but did NO work: no schedule was checked
+// and no reminder could go out. Report it as degraded (yellow, digest) so the
+// sentinel never reads a skipped hour as a healthy green run; a run of
+// consecutive busy hours becomes visible instead of silent.
+function reportSkippedRun(session, env = process.env) {
+  if (!session || !session.skip) return 'ok';
+  reportRunHealth('degraded', env);
+  return 'degraded';
+}
+
 async function main() {
   const opts = parseArgs();
   const now = opts.date ? new Date(`${opts.date}T${opts.time || '09:00'}:00`) : new Date();
@@ -244,6 +254,7 @@ async function main() {
   const session = await openTnSession(opts);
   if (session.skip) {
     console.log(`\n[skip] TN account busy (skip-if-busy lock, reason=${session.reason || 'busy'}) — skipping this run cleanly; will retry next hourly pass.`);
+    reportSkippedRun(session);
     console.log('\nDone.');
     return;
   }
@@ -353,7 +364,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
