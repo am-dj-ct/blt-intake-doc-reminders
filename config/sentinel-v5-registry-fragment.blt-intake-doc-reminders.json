@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "idr-hourly-reminders",
+      "repo": "blt-intake-doc-reminders",
+      "shadow": false,
+      "enabled": true,
+      "schedule": {
+        "cron": "35 7-20 * * *",
+        "tz": "America/Los_Angeles"
+      },
+      "grace_minutes": 30,
+      "skew_minutes": 5,
+      "tier": "T1",
+      "protected_paths": [
+        "run.sh",
+        "index.js",
+        "config.js",
+        "lib/",
+        "scripts/",
+        "config/",
+        "~/Library/LaunchAgents/com.blt.intake-doc-reminders.plist"
+      ],
+      "escalation": {
+        "page": "client_staff_facing_outage",
+        "deadline_minutes": 60,
+        "digest": true
+      },
+      "oracle": "self_report",
+      "dependency_keys": [],
+      "reason_codes": [
+        "ok",
+        "job_failed",
+        "degraded"
+      ],
+      "registered_at": "2026-08-15T00:00:00Z"
+    }
+  ]
+}

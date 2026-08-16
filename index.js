@@ -206,6 +206,34 @@ function digestSuppressible({ todayIntakeCount, gridByDay, todayYmd, tomorrowYmd
   return scrapeTrustworthy && todayIntakeCount === 0;
 }
 
+// Sentinel-v5 "degraded" side channel. run.sh exports
+// BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE and, after a clean exit, reads one word
+// from it: "degraded" turns the check-in yellow (digest, not a page). The run
+// is degraded when it finished but could not fully trust its own scrape —
+// a day failed to load or the clinician view was still filtered. Zero
+// intakes on a quiet day is NOT degraded; that is green by design (the
+// digest is gated on today's intakes for exactly that reason).
+function runHealthVerdict(gridByDay) {
+  const unprovable = Object.values(gridByDay).some(day => !(day && day.ok));
+  return unprovable ? 'degraded' : 'ok';
+}
+function reportRunHealth(verdict, env = process.env) {
+  const file = env.BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE;
+  if (!file) return;
+  try { fs.writeFileSync(file, `${verdict}\n`); }
+  catch (e) { console.warn(`[sentinel] could not write health verdict (${e.message}) — non-fatal`); }
+}
+
+// The TN-account-busy skip exits 0 but did NO work: no schedule was checked
+// and no reminder could go out. Report it as degraded (yellow, digest) so the
+// sentinel never reads a skipped hour as a healthy green run; a run of
+// consecutive busy hours becomes visible instead of silent.
+function reportSkippedRun(session, env = process.env) {
+  if (!session || !session.skip) return 'ok';
+  reportRunHealth('degraded', env);
+  return 'degraded';
+}
+
 async function main() {
   const opts = parseArgs();
   const now = opts.date ? new Date(`${opts.date}T${opts.time || '09:00'}:00`) : new Date();
@@ -226,6 +254,7 @@ async function main() {
   const session = await openTnSession(opts);
   if (session.skip) {
     console.log(`\n[skip] TN account busy (skip-if-busy lock, reason=${session.reason || 'busy'}) — skipping this run cleanly; will retry next hourly pass.`);
+    reportSkippedRun(session);
     console.log('\nDone.');
     return;
   }
@@ -271,6 +300,7 @@ async function main() {
     }
     saveCache(cache, now);
     console.log(`\nVirtual intakes in window: ${intakes.length}`);
+    reportRunHealth(runHealthVerdict(gridByDay));
 
     // Phase B: per intake, read documents, classify, run the state machine.
     const sent = ledger.load();
@@ -334,7 +364,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

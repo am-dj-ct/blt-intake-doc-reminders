@@ -87,6 +87,28 @@ verifies that restoration before returning an error. Logs remain in
 
 Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCalendarInterval` array to change hours.
 
+### Sentinel v5 (fleet monitor) check-ins
+
+`run.sh` reports every scheduled run to the BLT Sentinel v5 spool
+(`~/.blt-sentinel/spool`) as item `idr-hourly-reminders`, registered in blt-hub's
+`config/sentinel-v5-registry.json` (this repo's copy of the row:
+`config/sentinel-v5-registry-fragment.blt-intake-doc-reminders.json`, schedule
+`35 7-20 * * *` Pacific, tier T1, page class `client_staff_facing_outage`).
+
+| Outcome | Check-in |
+| --- | --- |
+| job exited 0 | green `ok` (a quiet day with zero intakes is green — the digest gate handles that by design) |
+| job exited 0 but a day failed to load / clinician view still filtered | yellow `degraded` (digest only) |
+| job exited non-zero: pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
+| no check-in by slot + grace | the sentinel's own missed-slot detection (pages) |
+
+The wrapper captures the slot before anything that can fail, never lets a
+telemetry error abort the real job, and emits nothing for a manual run
+outside the slot's acceptance window (see `scripts/sentinel-v5/checkin-lib.sh`).
+Producer-side failures are appended to
+`~/.blt-sentinel/logs/blt-intake-doc-reminders-fallback.log`. If the schedule
+in the plist changes, change the fragment row's cron to match.
+
 ## Files
 
 - `index.js` — orchestrator + state machine + CLI
