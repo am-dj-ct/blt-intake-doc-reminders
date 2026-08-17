@@ -1,0 +1,42 @@
+name: PR tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to 22 to match the Node major version this repo's own launchd
+      # plist targets (see the "node@22" assertion in
+      # test/mac-launchagent-install.test.js), not a guess.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm ci
+
+      # npm test = `node --test test/*.test.js test/*.test.mjs` (9 files, ~67
+      # documented cases; 69 actually collected as of this workflow).
+      #
+      # test/mac-launchagent-install.test.js is named as macOS-specific
+      # install behavior, but it was inspected and run locally (darwin,
+      # TZ=UTC) before writing this workflow: its 8 cases call
+      # installer.render() and replaceOneLaunchAgent() with fully mocked
+      # `operations` (write/enable/bootstrap/bootout/etc. are injected fake
+      # async functions), and neither scripts/install-mac-launchagent.js nor
+      # scripts/launchagent-transaction.js contains any process.platform
+      # check or child_process/execSync call. There is no self-skip guard.
+      # Verdict: this file is NOT excluded here. It runs on this Linux
+      # runner as part of the same `npm test` invocation and is expected to
+      # pass, because its logic is OS-independent by construction (no real
+      # launchctl/plutil calls). If a future change to this file adds a real
+      # shell-out to macOS tooling, this comment and this job need to be
+      # revisited — that would turn "8 mocked-logic cases, no exclusion
+      # needed" into a real Linux-CI gap that must be called out explicitly,
+      # not silently skipped.
+      - run: TZ=UTC npm test
