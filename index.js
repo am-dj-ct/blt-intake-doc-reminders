@@ -33,7 +33,7 @@ const { loadBroker } = require('./lib/account-broker');
 const tnAccountSession = require('./lib/tn-account-session');
 const {
   SENDER, FRONTDESK, ALWAYS_CC, CLINICIAN_EMAILS,
-  WINDOW_HOURS, ESCALATION_HOURS, DIGEST_HOUR, DIGEST_TO,
+  WINDOW_HOURS, ESCALATION_HOURS, DIGEST_HOUR, DIGEST_TO, ALERT_TO,
 } = require('./config');
 
 const CACHE_PATH = path.join(__dirname, 'data', 'appts.json');
@@ -202,11 +202,26 @@ async function dispatch(stage, it, now, sent, opts) {
 // to precede a busy one. A broken or filtered scrape still always sends —
 // surfacing that is the heartbeat's whole job.
 function digestSuppressible({ todayIntakeCount, gridByDay, todayYmd, tomorrowYmd }) {
+  const plan = digestPlan({ todayIntakeCount, gridByDay, todayYmd, tomorrowYmd });
+  return !plan.sendPhiDigest && !plan.sendScrapeAlert;
+}
+
+// Alert-mail reroute split (2026-08-16): the old single digest mixed two
+// signals — "here is today's intake picture" (PHI: client names, -> jesse@,
+// inside the BAA boundary) and "the scrape could not be trusted" (alert-class,
+// no PHI, -> the sentinel mailbox). This decides each independently:
+//   - PHI digest goes out iff there are intakes today to describe.
+//   - Scrape alert goes out iff today+tomorrow were not both scraped clean.
+// Both false is exactly the old suppression condition: a provably-quiet day.
+function digestPlan({ todayIntakeCount, gridByDay, todayYmd, tomorrowYmd }) {
   const requiredDaysScraped = Boolean(gridByDay[todayYmd]) && Boolean(gridByDay[tomorrowYmd]);
   const everyScrapedDayClean = Object.keys(gridByDay)
     .every(ymd => Boolean(gridByDay[ymd] && gridByDay[ymd].ok));
   const scrapeTrustworthy = requiredDaysScraped && everyScrapedDayClean;
-  return scrapeTrustworthy && todayIntakeCount === 0;
+  return {
+    sendPhiDigest: todayIntakeCount > 0,
+    sendScrapeAlert: !scrapeTrustworthy,
+  };
 }
 
 // Sentinel-v5 "degraded" side channel. run.sh exports
@@ -334,31 +349,55 @@ async function main() {
       const tomorrowYmd = tn.ymd(addLocalDays(now, 1));
       const today = results.filter(r => tn.ymd(r.start) === todayYmd).sort((a, b) => a.start - b.start);
 
-      const provablyEmpty = digestSuppressible({
+      const plan = digestPlan({
         todayIntakeCount: today.length,
         gridByDay,
         todayYmd,
         tomorrowYmd,
       });
 
-      if (provablyEmpty) {
+      if (!plan.sendPhiDigest && !plan.sendScrapeAlert) {
         console.log('[digest] skipped — no virtual intakes today, today+tomorrow scraped clean');
         if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       } else {
         const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-        const { subject, html } = templates.digest({
-          ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-          dateLabel,
-          intakes: today.map(r => ({
-            time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-            client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
-          })),
-        });
-        const to = opts.test ? SENDER : DIGEST_TO;
-        const subj = opts.test ? `[TEST] ${subject}` : subject;
-        console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-        for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
-        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+        const ranAt = now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+        // Alert-class, no PHI -> sentinel mailbox. Sent first: if the PHI
+        // digest send then fails, the next run retries both (digestKey is
+        // only banked after every planned send succeeded), which can repeat
+        // this alert — an acceptable duplicate for an alert-class signal.
+        if (plan.sendScrapeAlert) {
+          const alert = templates.scrapeAlert({
+            ranAt, dateLabel,
+            todayIntakeCount: today.length,
+            days: Object.keys(gridByDay).sort().map(ymd => ({ ymd, ok: Boolean(gridByDay[ymd] && gridByDay[ymd].ok) })),
+          });
+          const alertTo = opts.test ? SENDER : ALERT_TO;
+          const alertSubj = opts.test ? `[TEST] ${alert.subject}` : alert.subject;
+          console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} scrape alert -> ${alertTo}: ${alertSubj}`);
+          if (!opts.dryRun) { await sendEmail({ to: alertTo, cc: [], subject: alertSubj, html: alert.html }); console.log('  scrape alert sent.'); }
+        }
+
+        // PHI digest (client names + doc ticks) -> jesse@, inside the BAA
+        // boundary. Only when there are intakes today to describe.
+        if (plan.sendPhiDigest) {
+          const { subject, html } = templates.digest({
+            ranAt,
+            dateLabel,
+            intakes: today.map(r => ({
+              time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+              client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
+            })),
+          });
+          const to = opts.test ? SENDER : DIGEST_TO;
+          const subj = opts.test ? `[TEST] ${subject}` : subject;
+          console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
+          for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
+          if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); console.log('  digest sent.'); }
+        }
+
+        if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       }
     }
   } finally {
@@ -367,7 +406,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun };
+module.exports = { openTnSession, digestSuppressible, digestPlan, runHealthVerdict, reportRunHealth, reportSkippedRun };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

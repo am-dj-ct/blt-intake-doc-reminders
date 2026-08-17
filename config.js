@@ -19,6 +19,13 @@ const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
 const DIGEST_HOUR = 8;
 const DIGEST_TO = SENDER;
 
+// Alert-mail reroute (Jesse's ruling 2026-08-16): the no-PHI health/alert
+// signal ("the scrape could not be fully verified") goes to the sentinel
+// mailbox, where the blt-mail collector reads it as incident input. The
+// PHI-bearing digest (client names + doc ticks) stays with jesse@ — PHI-safe
+// alert mail only, never client identifiers, to this address.
+const ALERT_TO = 'sentinel@balancedlivingtherapy.com';
+
 // Clinician display name (exactly as it appears in the TN schedule grid header)
 // -> work email. Copied from therapy-hours/config.js. Used to address the
 // "docs are in" confirmation to the treating therapist. If a clinician is not
@@ -83,4 +90,5 @@ module.exports = {
   ESCALATION_HOURS,
   DIGEST_HOUR,
   DIGEST_TO,
+  ALERT_TO,
 };
