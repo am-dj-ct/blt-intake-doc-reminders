@@ -188,6 +188,15 @@ async function dispatch(stage, it, now, sent, opts) {
   console.log(`          sent.`);
 }
 
+// Write the local PHI digest report: temp file then rename, so a reader
+// mid-refresh sees the last-good file rather than a half-written one.
+function writeReportAtomically(reportPath, html) {
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  const tmp = `${reportPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, html);
+  fs.renameSync(tmp, reportPath);
+}
+
 // Decide whether the daily heartbeat digest can stay silent this run.
 //
 // Silence is allowed ONLY when the run can be trusted to have seen the whole
@@ -345,20 +354,35 @@ async function main() {
         console.log('[digest] skipped — no virtual intakes today, today+tomorrow scraped clean');
         if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
       } else {
+        // Split (Jesse ruling 2026-08-17): the PHI detail is written to a
+        // local report file inside the protected boundary and never emailed;
+        // the mail that goes out is a NO-PHI status/heartbeat to the
+        // machine-read sentinel mailbox — counts and statuses only.
         const dateLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-        const { subject, html } = templates.digest({
-          ranAt: now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-          dateLabel,
+        const ranAt = now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        const reportHtml = templates.digestReport({
+          ranAt, dateLabel,
           intakes: today.map(r => ({
             time: r.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
             client: r.client, clinician: r.clinician, hasSOD: r.hasSOD, hasGAINSS: r.hasGAINSS,
           })),
         });
+        const reportPath = path.join(__dirname, 'data', 'digests', `${todayYmd}.html`);
+        if (!opts.dryRun) writeReportAtomically(reportPath, reportHtml);
+
+        const { subject, html } = templates.digestStatus({
+          ranAt, dateLabel,
+          total: today.length,
+          docsComplete: today.filter(r => r.hasSOD && r.hasGAINSS).length,
+          missingSOD: today.filter(r => !r.hasSOD).length,
+          missingGAINSS: today.filter(r => !r.hasGAINSS).length,
+          scrapeHealth: runHealthVerdict(gridByDay),
+          reportPath: opts.dryRun ? null : reportPath,
+        });
         const to = opts.test ? SENDER : DIGEST_TO;
         const subj = opts.test ? `[TEST] ${subject}` : subject;
         console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-        for (const i of today) console.log(`   ${i.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${i.client} (${i.clinician}) SOD ${i.hasSOD ? 'Y' : 'N'} GAINSS ${i.hasGAINSS ? 'Y' : 'N'}`);
-        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  digest sent.'); }
+        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  status sent; detail written locally.'); }
       }
     }
   } finally {
@@ -367,7 +391,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, writeReportAtomically };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

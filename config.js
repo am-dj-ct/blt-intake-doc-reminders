@@ -14,10 +14,14 @@ const ESCALATION_CC = ['jesse@balancedlivingtherapy.com']; // CC'd on the 3h "st
 const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
 
 // Daily digest / heartbeat: once a day, on the first hourly run at or after
-// this local hour, email jesse@ a summary of today's virtual intakes and
-// whether each already has its SOD and GAINSS. Confirms the system is alive.
+// this local hour, send a NO-PHI status mail (counts and doc-status tallies
+// only) to the machine-read sentinel mailbox. Confirms the system is alive.
+// The PHI detail (client names, times, per-client doc status) is never
+// emailed; it is written to a local report file under data/digests/ inside
+// the protected boundary, and the status mail points at it by path only.
+// (Jesse ruling 2026-08-17: automated mail to a human inbox is a defect.)
 const DIGEST_HOUR = 8;
-const DIGEST_TO = SENDER;
+const DIGEST_TO = 'sentinel@balancedlivingtherapy.com';
 
 // Clinician display name (exactly as it appears in the TN schedule grid header)
 // -> work email. Copied from therapy-hours/config.js. Used to address the
