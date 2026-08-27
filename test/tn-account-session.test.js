@@ -151,8 +151,28 @@ test("stored sessions skip password submission; fresh sessions use canonical log
 });
 
 test("identity mismatch is a terminal pre-work error", async () => {
-  const broker = fakeBroker({ readLoggedInUsername: async () => "different-account" });
+  let reads = 0;
+  const broker = fakeBroker({ readLoggedInUsername: async () => { reads += 1; return "different-account"; } });
   await assert.rejects(() => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() }), /identity assertion failed/);
+  assert.equal(reads, 1, "a readable mismatch must fail closed without retrying");
+});
+
+test("a transient unreadable identity is retried before pre-work fails", async () => {
+  const observations = ["", "", "synthetic-blta"];
+  const broker = fakeBroker({ readLoggedInUsername: async () => observations.shift() });
+  const identity = await session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() });
+  assert.equal(identity.ok, true);
+  assert.deepEqual(observations, []);
+});
+
+test("identity remains fail-closed after the bounded unreadable retries", async () => {
+  let reads = 0;
+  const broker = fakeBroker({ readLoggedInUsername: async () => { reads += 1; return ""; } });
+  await assert.rejects(
+    () => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() }),
+    /identity_unreadable/,
+  );
+  assert.equal(reads, session.IDENTITY_READ_ATTEMPTS);
 });
 
 test("cleanup confirms context death before releasing the exact lock", async () => {
