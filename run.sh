@@ -76,7 +76,10 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
-elif [[ "$health" == "degraded" ]]; then
+elif [[ "$health" != "ok" ]]; then
+  # A successful real run always writes an explicit terminal verdict. Missing
+  # or unknown output is not evidence of health: fail closed to degraded so a
+  # generic/partial outcome cannot loop forever as a green self-report.
   sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 else
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"
