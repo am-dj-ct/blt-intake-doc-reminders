@@ -1,8 +1,9 @@
 // Smoke test: run the REAL run.sh wrapper end to end (dry-run, synthetic job
 // body, temp spool root) and assert a sentinel check-in file lands with the
 // right verdict for every failure mode the wrapper distinguishes:
-//   green ok        — job exited 0
+//   green ok        — job exited 0 and explicitly reported a trustworthy run
 //   yellow degraded — job exited 0 but reported an untrusted scrape
+//                     (including a missing/malformed health verdict)
 //   red job_failed  — job exited non-zero (incl. the wrapper's own
 //                     attestation refusal, exercised with NO override)
 //   (nothing)       — manual run outside the slot acceptance window
@@ -29,7 +30,7 @@ const OUT_OF_WINDOW = "2026-08-15T22:20:00Z";
 
 const haveNode22 = existsSync(NODE22);
 
-function fakeJob(dir, { rc = 0, health = "" } = {}) {
+function fakeJob(dir, { rc = 0, health = "ok" } = {}) {
   const script = join(dir, "fake-job.sh");
   writeFileSync(script, [
     "#!/usr/bin/env bash",
@@ -99,6 +100,19 @@ test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", 
     assertSingleCheckin(run, "yellow", "degraded");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: an exit-zero job without a trustworthy health verdict never checks in green", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  for (const health of ["", "unknown-verdict"]) {
+    const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+    try {
+      const run = runWrapper({ dir, override: fakeJob(dir, { health }) });
+      assert.equal(run.result.status, 0, run.result.stderr);
+      assertSingleCheckin(run, "yellow", "degraded");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
