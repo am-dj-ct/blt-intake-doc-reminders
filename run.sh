@@ -21,10 +21,11 @@ SENTINEL_NODE="$node_bin"
 source "$repo/scripts/sentinel-v5/checkin-lib.sh"
 sentinel_capture_invocation "$SENTINEL_ITEM"
 
-# Side channel for the "degraded" verdict: index.js writes one word here when
-# the run finished (exit 0) but could not fully trust its own scrape (a day
-# failed to load or the clinician view was still filtered). Zero intakes on a
-# quiet day is NOT degraded — that is green by design.
+# Side channel for the completion verdict: index.js must write exactly "ok" or
+# "degraded" before a zero exit can become a Sentinel verdict. Requiring the
+# explicit word keeps a missing, unreadable, or malformed outcome from being
+# reported as healthy. Zero intakes on a quiet day writes "ok" and is green by
+# design.
 health_file="$(mktemp 2>/dev/null || true)"
 if [[ -n "$health_file" ]]; then
   export BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE="$health_file"
@@ -76,10 +77,12 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
-elif [[ "$health" == "degraded" ]]; then
-  sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
-else
+elif [[ "$health" == "ok" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"
+else
+  # A zero exit is necessary but not sufficient for green: the job must have
+  # reached the point where it could explicitly prove its scrape outcome.
+  sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 fi
 
 exit "$rc"

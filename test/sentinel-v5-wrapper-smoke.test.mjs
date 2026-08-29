@@ -1,8 +1,9 @@
 // Smoke test: run the REAL run.sh wrapper end to end (dry-run, synthetic job
 // body, temp spool root) and assert a sentinel check-in file lands with the
 // right verdict for every failure mode the wrapper distinguishes:
-//   green ok        — job exited 0
-//   yellow degraded — job exited 0 but reported an untrusted scrape
+//   green ok        — job exited 0 and explicitly reported ok
+//   yellow degraded — job exited 0 but reported an untrusted, missing, or
+//                     malformed completion verdict
 //   red job_failed  — job exited non-zero (incl. the wrapper's own
 //                     attestation refusal, exercised with NO override)
 //   (nothing)       — manual run outside the slot acceptance window
@@ -78,16 +79,31 @@ function assertSingleCheckin(run, status, reasonCode) {
   assert.equal(p.schema, 2);
 }
 
-test("wrapper: clean dry-run checks in green/ok", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
+test("wrapper: clean dry-run with an explicit ok verdict checks in green/ok", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
-    const run = runWrapper({ dir, override: fakeJob(dir) });
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "ok" }) });
     assert.equal(run.result.status, 0, run.result.stderr);
     assert.match(run.result.stdout, /fake job args: --dry-run/);
     assertSingleCheckin(run, "green", "ok");
     assert.equal(run.fallbackLog, "", "no producer-side failures logged");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: missing or malformed completion verdict checks in yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, async (t) => {
+  for (const [name, health] of [["missing", ""], ["malformed", "healthy"]]) {
+    await t.test(name, () => {
+      const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+      try {
+        const run = runWrapper({ dir, override: fakeJob(dir, { health }) });
+        assert.equal(run.result.status, 0, run.result.stderr);
+        assertSingleCheckin(run, "yellow", "degraded");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -131,7 +147,7 @@ test("wrapper: attestation refusal (no pins, no override) is a REAL red/job_fail
 test("wrapper: the job override is ignored without --dry-run (falls through to the real, refusing job body)", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
-    const run = runWrapper({ dir, args: [], override: fakeJob(dir) });
+    const run = runWrapper({ dir, args: [], override: fakeJob(dir, { health: "ok" }) });
     assert.equal(run.result.status, 64);
     assert.doesNotMatch(run.result.stdout, /fake job args/);
     assertSingleCheckin(run, "red", "job_failed");
@@ -143,7 +159,7 @@ test("wrapper: the job override is ignored without --dry-run (falls through to t
 test("wrapper: a manual run outside the acceptance window emits nothing and logs why", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
-    const run = runWrapper({ dir, override: fakeJob(dir), testNow: OUT_OF_WINDOW });
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "ok" }), testNow: OUT_OF_WINDOW });
     assert.equal(run.result.status, 0, run.result.stderr);
     assert.equal(run.files.length, 0);
     assert.match(run.fallbackLog, /capture-invocation:idr-hourly-reminders.*stale/);

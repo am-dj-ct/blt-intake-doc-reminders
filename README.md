@@ -97,8 +97,8 @@ Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCa
 
 | Outcome | Check-in |
 | --- | --- |
-| job exited 0 | green `ok` (a quiet day with zero intakes is green — the digest gate handles that by design) |
-| job exited 0 but a day failed to load / clinician view still filtered | yellow `degraded` (digest only) |
+| job exited 0 and wrote an explicit `ok` verdict | green `ok` (a quiet day with zero intakes is green — the digest gate handles that by design) |
+| job exited 0 but reported `degraded`, or its verdict was missing/malformed | yellow `degraded` (digest only) |
 | job exited non-zero: pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
 | no check-in by slot + grace | the sentinel's own missed-slot detection (pages) |
 
