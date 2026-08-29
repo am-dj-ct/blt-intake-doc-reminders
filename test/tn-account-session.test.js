@@ -125,6 +125,24 @@ test("reviewed Chrome symlink names are rejected outside the exact profile root"
   );
 });
 
+test("a sibling singleton quarantine is outside the locked profile traversal", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-quarantine-sibling-"));
+  const profile = session.profileDirFor("blta", base);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+
+  // The broker may preserve stale Chrome singleton links next to
+  // browser-profile for diagnosis. They are not owned by this profile lock
+  // and must neither block the run nor be deleted by profile hardening.
+  const quarantine = path.join(path.dirname(profile), "singleton-quarantine-20260828T0700Z");
+  fs.mkdirSync(quarantine, { mode: 0o700 });
+  const preserved = path.join(quarantine, "SingletonSocket");
+  fs.symlinkSync("/tmp/synthetic-chrome-socket", preserved);
+
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  assert.equal(fs.lstatSync(preserved).isSymbolicLink(), true);
+  assert.equal(fs.readlinkSync(preserved), "/tmp/synthetic-chrome-socket");
+});
+
 test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
   const navigations = [];
   const page = { goto: async (url) => navigations.push(url) };
