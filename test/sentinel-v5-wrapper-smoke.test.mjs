@@ -81,11 +81,33 @@ function assertSingleCheckin(run, status, reasonCode) {
 test("wrapper: clean dry-run checks in green/ok", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
-    const run = runWrapper({ dir, override: fakeJob(dir) });
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "ok" }) });
     assert.equal(run.result.status, 0, run.result.stderr);
     assert.match(run.result.stdout, /fake job args: --dry-run/);
     assertSingleCheckin(run, "green", "ok");
     assert.equal(run.fallbackLog, "", "no producer-side failures logged");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: missing terminal health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: unknown terminal health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "generic_outcome" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
