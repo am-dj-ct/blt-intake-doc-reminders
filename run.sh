@@ -78,6 +78,11 @@ if [[ "$rc" != "0" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
 elif [[ "$health" == "degraded" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
+elif [[ -n "$health" && "$health" != "ok" ]]; then
+  # The side channel has a closed vocabulary. A truncated or otherwise
+  # corrupt value is not evidence of a healthy scrape, so fail closed to the
+  # non-paging degraded outcome instead of silently converting it to green.
+  sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 else
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"
 fi

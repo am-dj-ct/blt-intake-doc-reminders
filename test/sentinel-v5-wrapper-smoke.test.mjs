@@ -102,6 +102,17 @@ test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", 
   }
 });
 
+test("wrapper: an invalid health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "degrad" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wrapper: non-zero job (e.g. TN login failure) checks in red/job_failed and preserves the exit code", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
