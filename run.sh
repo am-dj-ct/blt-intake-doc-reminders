@@ -21,10 +21,9 @@ SENTINEL_NODE="$node_bin"
 source "$repo/scripts/sentinel-v5/checkin-lib.sh"
 sentinel_capture_invocation "$SENTINEL_ITEM"
 
-# Side channel for the "degraded" verdict: index.js writes one word here when
-# the run finished (exit 0) but could not fully trust its own scrape (a day
-# failed to load or the clinician view was still filtered). Zero intakes on a
-# quiet day is NOT degraded — that is green by design.
+# Outcome side channel: index.js must write "ok" or "degraded" before an
+# exit-zero run can check in. A missing/unknown verdict fails closed to
+# degraded. Zero intakes on a fully checked quiet day is "ok" by design.
 health_file="$(mktemp 2>/dev/null || true)"
 if [[ -n "$health_file" ]]; then
   export BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE="$health_file"
@@ -76,7 +75,10 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
-elif [[ "$health" == "degraded" ]]; then
+elif [[ "$health" != "ok" ]]; then
+  # Exit zero alone is not proof that the job completed its outcome loop.
+  # Fail closed when index.js never published a verdict (or published an
+  # unknown one), otherwise an early clean return can become a false green.
   sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 else
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"

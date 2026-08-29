@@ -1,8 +1,9 @@
 // Smoke test: run the REAL run.sh wrapper end to end (dry-run, synthetic job
 // body, temp spool root) and assert a sentinel check-in file lands with the
 // right verdict for every failure mode the wrapper distinguishes:
-//   green ok        — job exited 0
+//   green ok        — job exited 0 and explicitly reported ok
 //   yellow degraded — job exited 0 but reported an untrusted scrape
+//                     or failed to report a valid outcome
 //   red job_failed  — job exited non-zero (incl. the wrapper's own
 //                     attestation refusal, exercised with NO override)
 //   (nothing)       — manual run outside the slot acceptance window
@@ -78,14 +79,36 @@ function assertSingleCheckin(run, status, reasonCode) {
   assert.equal(p.schema, 2);
 }
 
-test("wrapper: clean dry-run checks in green/ok", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
+test("wrapper: clean dry-run with an explicit ok outcome checks in green/ok", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
-    const run = runWrapper({ dir, override: fakeJob(dir) });
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "ok" }) });
     assert.equal(run.result.status, 0, run.result.stderr);
     assert.match(run.result.stdout, /fake job args: --dry-run/);
     assertSingleCheckin(run, "green", "ok");
     assert.equal(run.fallbackLog, "", "no producer-side failures logged");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: exit zero without an outcome fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: an unknown outcome fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "CLEAN" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
