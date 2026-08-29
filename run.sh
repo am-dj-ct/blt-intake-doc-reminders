@@ -76,7 +76,11 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
-elif [[ "$health" == "degraded" ]]; then
+elif [[ -n "$health" && "$health" != "ok" ]]; then
+  # The health side channel has a closed vocabulary. Fail a malformed or
+  # truncated non-empty verdict closed to yellow instead of silently turning
+  # an unprovable run green. An empty verdict remains valid for the synthetic
+  # dry-run override, which does not execute index.js.
   sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 else
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"

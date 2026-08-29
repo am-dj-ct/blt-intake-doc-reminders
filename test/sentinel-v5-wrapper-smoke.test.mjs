@@ -91,10 +91,32 @@ test("wrapper: clean dry-run checks in green/ok", { skip: !haveNode22 && "node@2
   }
 });
 
+test("wrapper: an explicit ok health verdict checks in green/ok", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "ok" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "green", "ok");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
     const run = runWrapper({ dir, override: fakeJob(dir, { health: "degraded" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: a malformed non-empty health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "degrade" }) });
     assert.equal(run.result.status, 0, run.result.stderr);
     assertSingleCheckin(run, "yellow", "degraded");
   } finally {
@@ -161,6 +183,7 @@ test("wrapper source: sentinel capture precedes the job body; job body still att
   assert.match(src, /verify-runtime-checkout[.]js/);
   assert.match(src, /doppler run --silent --no-fallback/);
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" red job_failed/);
+  assert.match(src, /-n "\$health" && "\$health" != "ok"/);
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" yellow degraded/);
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" green ok/);
   assert.doesNotMatch(src, /^\s*exec /m, "the wrapper must not exec away — it has to outlive the job to check in");
