@@ -29,7 +29,7 @@ const OUT_OF_WINDOW = "2026-08-15T22:20:00Z";
 
 const haveNode22 = existsSync(NODE22);
 
-function fakeJob(dir, { rc = 0, health = "" } = {}) {
+function fakeJob(dir, { rc = 0, health = "ok" } = {}) {
   const script = join(dir, "fake-job.sh");
   writeFileSync(script, [
     "#!/usr/bin/env bash",
@@ -95,6 +95,28 @@ test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", 
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
     const run = runWrapper({ dir, override: fakeJob(dir, { health: "degraded" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: exit zero without a health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "yellow", "degraded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: exit zero with an unknown health verdict fails closed to yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "unexpected" }) });
     assert.equal(run.result.status, 0, run.result.stderr);
     assertSingleCheckin(run, "yellow", "degraded");
   } finally {

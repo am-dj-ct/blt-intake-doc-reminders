@@ -76,10 +76,13 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
-elif [[ "$health" == "degraded" ]]; then
-  sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
-else
+elif [[ "$health" == "ok" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" green ok "$SENTINEL_AT" "$SENTINEL_SLOT"
+else
+  # Exit zero is not enough to prove that the job completed its outcome
+  # loop. Only index.js's explicit `ok` verdict is green; a missing,
+  # truncated, or unknown verdict fails closed as degraded.
+  sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"
 fi
 
 exit "$rc"
