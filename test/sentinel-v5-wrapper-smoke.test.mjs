@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..");
 const RUN_SH = join(REPO, "run.sh");
+const CHECKIN_LIB = join(REPO, "scripts", "sentinel-v5", "checkin-lib.sh");
 const NODE22 = "/opt/homebrew/opt/node@22/bin/node";
 const ITEM = "idr-hourly-reminders";
 // 14:36 PDT — one minute after the 14:35 slot, inside the acceptance window.
@@ -86,6 +87,20 @@ test("wrapper: clean dry-run checks in green/ok", { skip: !haveNode22 && "node@2
     assert.match(run.result.stdout, /fake job args: --dry-run/);
     assertSingleCheckin(run, "green", "ok");
     assert.equal(run.fallbackLog, "", "no producer-side failures logged");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: invocation capture does not depend on jq", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "green", "ok");
+    assert.equal(run.fallbackLog, "");
+    const helper = readFileSync(CHECKIN_LIB, "utf8");
+    assert.doesNotMatch(helper, /command -v jq|\|\s*jq\b/, "capture must remain independent of jq");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
