@@ -8,7 +8,7 @@
 // Importable API: emitCheckin({ item, status, reasonCode, at, slot, runSuffix }).
 // CLI:
 //   node scripts/sentinel-v5/checkin.mjs --capture-invocation --item idr-hourly-reminders
-//     -> {"at":"...","slot":"..."} on stdout (exit 1 + stderr if no slot resolves)
+//     -> <at><TAB><slot> on stdout (exit 1 + stderr if no slot resolves)
 //   node scripts/sentinel-v5/checkin.mjs --item idr-hourly-reminders \
 //        --status green --reason-code ok --at <iso> --slot <iso>
 //
@@ -146,7 +146,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (args["capture-invocation"]) {
     try {
       const invocation = captureInvocation(args.item, invocationNow());
-      process.stdout.write(`${JSON.stringify(invocation)}\n`);
+      // Keep the wrapper contract deliberately parseable by bash itself. An
+      // earlier JSON contract made every check-in depend on a working `jq`
+      // binary even though Node had already parsed and validated both values.
+      process.stdout.write(`${invocation.at}\t${invocation.slot}\n`);
       process.exit(0);
     } catch (err) {
       process.stderr.write(`sentinel slot capture failed: ${err?.message ?? err}\n`);

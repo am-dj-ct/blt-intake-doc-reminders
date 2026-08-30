@@ -44,30 +44,33 @@ sentinel_log_fallback_failure() {
 # failure; see the header for why.
 sentinel_capture_invocation() {
   local item="$1"
-  local json="" err="" errfile=""
+  local capture="" err="" errfile="" extra=""
   SENTINEL_AT=""
   SENTINEL_SLOT=""
   errfile="$(mktemp 2>/dev/null || true)"
   if [ -n "$errfile" ]; then
-    json="$("$SENTINEL_NODE" "$SENTINEL_CHECKIN_MJS" --capture-invocation --item "$item" 2>"$errfile")" || {
+    capture="$("$SENTINEL_NODE" "$SENTINEL_CHECKIN_MJS" --capture-invocation --item "$item" 2>"$errfile")" || {
       err="$(cat "$errfile" 2>/dev/null || true)"
       sentinel_log_fallback_failure "capture-invocation:$item" "${err:-unknown error}"
-      json=""
+      capture=""
     }
     rm -f "$errfile" 2>/dev/null || true
   else
-    json="$("$SENTINEL_NODE" "$SENTINEL_CHECKIN_MJS" --capture-invocation --item "$item" 2>/dev/null)" || {
+    capture="$("$SENTINEL_NODE" "$SENTINEL_CHECKIN_MJS" --capture-invocation --item "$item" 2>/dev/null)" || {
       sentinel_log_fallback_failure "capture-invocation:$item" "failed (mktemp unavailable, no stderr detail captured)"
-      json=""
+      capture=""
     }
   fi
-  if [ -n "$json" ] && command -v jq >/dev/null 2>&1; then
-    SENTINEL_AT="$(printf '%s' "$json" | jq -r '.at // empty' 2>/dev/null || true)"
-    SENTINEL_SLOT="$(printf '%s' "$json" | jq -r '.slot // empty' 2>/dev/null || true)"
+  if [ -n "$capture" ]; then
+    IFS=$'\t' read -r SENTINEL_AT SENTINEL_SLOT extra <<< "$capture"
+    if [ -n "${extra:-}" ]; then
+      SENTINEL_AT=""
+      SENTINEL_SLOT=""
+    fi
   fi
   if [ -z "$SENTINEL_AT" ] || [ -z "$SENTINEL_SLOT" ]; then
-    if [ -n "$json" ]; then
-      sentinel_log_fallback_failure "capture-invocation:$item" "jq missing or malformed output: $json"
+    if [ -n "$capture" ]; then
+      sentinel_log_fallback_failure "capture-invocation:$item" "malformed output: $capture"
     fi
     SENTINEL_AT=""
     SENTINEL_SLOT=""
