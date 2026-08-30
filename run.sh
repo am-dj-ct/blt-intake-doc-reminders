@@ -19,6 +19,14 @@ SENTINEL_ITEM="idr-hourly-reminders"
 SENTINEL_NODE="$node_bin"
 # shellcheck source=scripts/sentinel-v5/checkin-lib.sh
 source "$repo/scripts/sentinel-v5/checkin-lib.sh"
+
+# Publisher/verifier seam: prove this deployed producer immediately even when
+# deployment lands after the final scheduled slot. This emits a no-PHI drill
+# check-in only; it must never enter the TherapyNotes/reminder job body.
+if [[ "${1:-}" == "--sentinel-deployment-probe" && "$#" == "1" ]]; then
+  "$SENTINEL_NODE" "$SENTINEL_CHECKIN_MJS" --deployment-probe --item "$SENTINEL_ITEM"
+  exit $?
+fi
 sentinel_capture_invocation "$SENTINEL_ITEM"
 
 # Side channel for the "degraded" verdict: index.js writes one word here when

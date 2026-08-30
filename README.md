@@ -109,6 +109,11 @@ Producer-side failures are appended to
 `~/.blt-sentinel/logs/blt-intake-doc-reminders-fallback.log`. If the schedule
 in the plist changes, change the fragment row's cron to match.
 
+After deployment, the trusted verifier can run
+`./run.sh --sentinel-deployment-probe`. It emits one no-PHI green `drill`
+check-in without entering the TherapyNotes or reminder job body, so an
+overnight deployment does not have to wait for the next 07:35 slot for proof.
+
 ## Files
 
 - `index.js` — orchestrator + state machine + CLI

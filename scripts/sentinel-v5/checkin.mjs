@@ -74,6 +74,24 @@ export function captureInvocation(item, now = new Date()) {
   return { at, slot };
 }
 
+// A deployment can finish after the final scheduled slot of the day. In that
+// case waiting for a normal check-in cannot prove the deployed producer for
+// many hours. A deployment probe is deliberately a Sentinel drill: it uses
+// the probe instant as both `at` and `slot`, and never runs the reminder job.
+export function emitDeploymentProbe({ item, now = new Date(), spoolRoot, env = process.env }) {
+  const at = now.toISOString();
+  return emitCheckin({
+    item,
+    status: "green",
+    reasonCode: "drill",
+    at,
+    slot: at,
+    spoolRoot,
+    now,
+    env,
+  });
+}
+
 /**
  * @param {object} args
  * @param {string} args.item - registry item id (e.g. "idr-hourly-reminders")
@@ -122,7 +140,7 @@ function parseArgs(argv) {
     if (!arg.startsWith("--")) continue;
     const key = arg.slice(2);
     const next = argv[i + 1];
-    if (key === "now" || key === "capture-invocation") {
+    if (key === "now" || key === "capture-invocation" || key === "deployment-probe") {
       out[key] = true;
       continue;
     }
@@ -153,6 +171,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(0);
     } catch (err) {
       process.stderr.write(`sentinel slot capture failed: ${err?.message ?? err}\n`);
+      process.exit(1);
+    }
+  }
+  if (args["deployment-probe"]) {
+    try {
+      const result = emitDeploymentProbe({ item: args.item, now: invocationNow() });
+      process.stdout.write(`${result.filename ?? `(skipped: ${result.reason ?? "not admitted"})`}\n`);
+      process.exit(0);
+    } catch (err) {
+      process.stderr.write(`sentinel deployment probe failed: ${err?.message ?? err}\n`);
       process.exit(1);
     }
   }

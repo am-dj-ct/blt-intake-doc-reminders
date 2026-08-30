@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { emitCheckin, captureInvocation, invocationNow, isB1Dark } from "../scripts/sentinel-v5/checkin.mjs";
+import { emitCheckin, emitDeploymentProbe, captureInvocation, invocationNow, isB1Dark } from "../scripts/sentinel-v5/checkin.mjs";
 import { slotForItem, isItemEnabled } from "../scripts/sentinel-v5/cron-slot.mjs";
 import { SENTINEL_V5_REASON_CODES } from "../scripts/sentinel-v5/checkin-schema.mjs";
 import { INTAKE_DOC_REMINDERS_ITEMS } from "../scripts/sentinel-v5/item-registry.mjs";
@@ -91,6 +91,21 @@ test("emitCheckin lands a schema-v2 file in <root>/incoming for green, yellow an
       assert.match(res.filename, new RegExp(`^${ITEM}__${ITEM}-\\d+-\\d+__[0-9a-f]{64}\\.json$`));
     }
     assert.equal(readdirSync(join(root, "incoming")).length, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("deployment probe is a drill and does not require a nearby scheduled slot", () => {
+  const root = tmpRoot();
+  try {
+    const now = new Date("2026-08-15T12:00:00Z");
+    const result = emitDeploymentProbe({ item: ITEM, now, spoolRoot: root, env: {} });
+    const payload = JSON.parse(readFileSync(join(root, "incoming", result.filename), "utf8"));
+    assert.equal(payload.status, "green");
+    assert.equal(payload.reason_code, "drill");
+    assert.equal(payload.at, now.toISOString());
+    assert.equal(payload.slot, now.toISOString());
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

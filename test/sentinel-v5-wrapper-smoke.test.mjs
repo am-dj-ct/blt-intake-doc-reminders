@@ -106,6 +106,31 @@ test("wrapper: invocation capture does not depend on jq", { skip: !haveNode22 &&
   }
 });
 
+test("wrapper: deployment probe emits a drill without running the job", { skip: !haveNode22 && "node@22 not installed at the pinned path" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const override = fakeJob(dir);
+    const run = runWrapper({
+      dir,
+      args: ["--sentinel-deployment-probe"],
+      override,
+      // Overnight, many hours after the last real slot. A normal invocation
+      // correctly emits nothing here, but deploy verification must not wait.
+      testNow: "2026-08-15T12:00:00Z",
+    });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assert.equal(run.files.length, 1);
+    assert.equal(run.payloads[0].status, "green");
+    assert.equal(run.payloads[0].reason_code, "drill");
+    assert.equal(run.payloads[0].at, "2026-08-15T12:00:00.000Z");
+    assert.equal(run.payloads[0].slot, "2026-08-15T12:00:00.000Z");
+    assert.doesNotMatch(run.result.stdout, /fake job args/);
+    assert.equal(run.fallbackLog, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
