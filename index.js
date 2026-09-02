@@ -120,9 +120,10 @@ async function openTnSession(opts = {}, deps = {}) {
             // context/browser close that timed out is cosmetic, so warn and let
             // the run finish cleanly instead of exiting non-zero over teardown
             // that actually succeeded.
-            if (cleanup.safeToClose) { console.warn(`[cleanup] graceful browser close was imperfect but teardown is confirmed: ${cleanup.error?.message}`); return; }
+            if (cleanup.safeToClose) { console.warn(`[cleanup] graceful browser close was imperfect but teardown is confirmed: ${cleanup.error?.message}`); return { cleanupWarning: true }; }
             throw cleanup.error;
           }
+          return { cleanupWarning: false };
         },
       };
     } catch (error) {
@@ -236,6 +237,21 @@ function reportRunHealth(verdict, env = process.env) {
   catch (e) { console.warn(`[sentinel] could not write health verdict (${e.message}) — non-fatal`); }
 }
 
+// Outcome artifact, not just an exit code. A probe reading only launchd's
+// exit status cannot tell a quiet zero-intake hour from an hour that sent
+// nothing because sending itself broke — both are exit 0. This file is the
+// count a probe can compare against expectation: appts scraped, candidates
+// found, and how many reminder/digest sends actually happened this run.
+// Counts only — no client names, dates only as YMD, no PHI.
+const STATUS_PATH = path.join(__dirname, 'data', 'status', 'latest.json');
+function writeRunStatus(status, statusPath = STATUS_PATH) {
+  try {
+    writeReportAtomically(statusPath, JSON.stringify({ ranAt: new Date().toISOString(), ...status }, null, 2));
+  } catch (e) {
+    console.warn(`[status] could not write run status (${e.message}) — non-fatal`);
+  }
+}
+
 // The TN-account-busy skip exits 0 but did NO work: no schedule was checked
 // and no reminder could go out. Report it as degraded (yellow, digest) so the
 // sentinel never reads a skipped hour as a healthy green run; a run of
@@ -279,6 +295,8 @@ async function main() {
   // already-started-today appointments out of `intakes` — those aren't proof
   // the day is empty, just proof they're outside the nag/escalation window.
   const gridByDay = {};
+  let totalCandidateCount = 0;
+  let runStatus = null;
   try {
     // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
     for (const d of dates) {
@@ -297,6 +315,7 @@ async function main() {
         .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
         .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
       console.log(`${d}: ${grid.length} appts, ${candidates.length} in-window video candidate(s)`);
+      totalCandidateCount += candidates.length;
 
       for (const a of candidates) {
         const key = `${a.clinician}|${a.client}|${a.start.toISOString()}`;
@@ -316,6 +335,7 @@ async function main() {
 
     // Phase B: per intake, read documents, classify, run the state machine.
     const sent = ledger.load();
+    const sentAtPhaseBStart = sent.size;
     const results = [];
     for (const it of intakes) {
       const rows = await tn.getDocumentTitles(page, it.patientId);
@@ -385,13 +405,22 @@ async function main() {
         if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  status sent; detail written locally.'); }
       }
     }
+    runStatus = {
+      dates,
+      apptCounts: Object.fromEntries(Object.entries(gridByDay).map(([ymd, day]) => [ymd, (day && day.grid ? day.grid.length : null)])),
+      candidateCount: totalCandidateCount,
+      virtualIntakeCount: intakes.length,
+      sentCount: sent.size - sentAtPhaseBStart,
+      scrapeHealth: runHealthVerdict(gridByDay),
+    };
   } finally {
-    await session.release();
+    const released = await session.release();
+    if (runStatus) writeRunStatus({ ...runStatus, cleanupWarning: Boolean(released && released.cleanupWarning) });
   }
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, writeReportAtomically };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
