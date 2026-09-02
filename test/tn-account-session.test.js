@@ -21,6 +21,7 @@ function decision(account = "blta", requested = "blta") {
 }
 
 function fakeBroker(overrides = {}) {
+  const readLoggedInUsername = overrides.readLoggedInUsername || (async () => "synthetic-blta");
   return {
     doppler: { createDopplerReader: () => async () => "", createDopplerWriter: () => async () => {} },
     resolveAccountForRun: async () => decision(),
@@ -28,7 +29,15 @@ function fakeBroker(overrides = {}) {
     therapyNotesLoginVisible: async () => false,
     performAccountBrokerLogin: async () => {},
     isTherapyNotesAppUrlFamily: () => true,
-    readLoggedInUsername: async () => "synthetic-blta",
+    readLoggedInUsername,
+    // Default identity read mirrors readLoggedInUsername's plain string
+    // through the richer {username, ok, failure} shape, with no specific
+    // failure reason -- a test wanting a specific read-failure code (e.g.
+    // identity_element_empty) overrides readLoggedInIdentity directly.
+    readLoggedInIdentity: overrides.readLoggedInIdentity || (async (...args) => {
+      const username = await readLoggedInUsername(...args);
+      return { username, ok: Boolean(username), failure: username ? null : null };
+    }),
     // Mirrors the PINNED broker's tn-account-identity-gate.js exactly: trims
     // both sides, compares case-insensitively, and distinguishes an
     // unreadable identity from a mismatched one. The previous stub used
@@ -36,10 +45,14 @@ function fakeBroker(overrides = {}) {
     // not tell those two apart -- and identity_unreadable is precisely the
     // failure the schedule lane hit on 2026-08-16.
     identityGate: {
-      assertIdentity: ({ observedUsername, expectedUsername }) => {
+      assertIdentity: ({ observedUsername, expectedUsername, readFailure = null }) => {
         const observed = String(observedUsername || "").trim();
         const expected = String(expectedUsername || "").trim();
-        if (!observed) return { ok: false, reason: "identity_unreadable" };
+        if (!observed) {
+          const known = ["identity_element_missing", "identity_element_empty", "identity_read_error"];
+          const reported = String(readFailure || "").trim();
+          return { ok: false, reason: known.includes(reported) ? reported : "identity_unreadable" };
+        }
         if (!expected) return { ok: false, reason: "expected_username_missing" };
         if (observed.toLowerCase() !== expected.toLowerCase()) return { ok: false, reason: "identity_mismatch", observed, expected };
         return { ok: true, observed, expected };
@@ -153,6 +166,36 @@ test("stored sessions skip password submission; fresh sessions use canonical log
 test("identity mismatch is a terminal pre-work error", async () => {
   const broker = fakeBroker({ readLoggedInUsername: async () => "different-account" });
   await assert.rejects(() => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() }), /identity assertion failed/);
+});
+
+test("an unreadable identity carries its specific read-failure reason, not the generic fallback", async () => {
+  // Regression coverage for the ~40 identity_unreadable occurrences since
+  // Aug 7: this repo used to call the plain readLoggedInUsername (a bare
+  // string, no reason) so every read failure collapsed into the generic
+  // "identity_unreadable" the gate falls back to. assertIdentityOrThrow now
+  // reads via readLoggedInIdentity and threads its failure code through.
+  const broker = fakeBroker({
+    readLoggedInIdentity: async () => ({ username: "", ok: false, failure: "identity_element_empty" }),
+  });
+  await assert.rejects(
+    () => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved() }),
+    /identity assertion failed for account "blta": identity_element_empty/,
+  );
+});
+
+test("assertIdentityOrThrow passes a warn callback through so the read's own diagnostic line lands in this job's log", async () => {
+  let warned = null;
+  const broker = fakeBroker({
+    readLoggedInIdentity: async (_page, _config, options) => {
+      options.warn("tn_identity.read_failed diagnostic");
+      return { username: "", ok: false, failure: "identity_read_error" };
+    },
+  });
+  await assert.rejects(
+    () => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved(), warn: (message) => { warned = message; } }),
+    /identity_read_error/,
+  );
+  assert.equal(warned, "tn_identity.read_failed diagnostic");
 });
 
 test("cleanup confirms context death before releasing the exact lock", async () => {

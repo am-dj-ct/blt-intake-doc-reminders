@@ -40,6 +40,7 @@ function modules() {
     therapyNotesLoginVisible: async () => false,
     performAccountBrokerLogin: async () => {},
     readLoggedInUsername: async () => "synthetic",
+    readLoggedInIdentity: async () => ({ username: "synthetic", ok: true, failure: null }),
     isTherapyNotesAppUrlFamily: () => true,
     confirmAccountBrokerLoginUsable: async () => {},
   };
