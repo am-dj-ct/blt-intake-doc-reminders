@@ -17,6 +17,9 @@ const LABEL = "com.blt.intake-doc-reminders";
 const PLIST = `${HOME}/Library/LaunchAgents/${LABEL}.plist`;
 const LOG_DIR = `${ROOT}/data`;
 const BACKUP_ROOT = `${HOME}/.blt-automation/backups/intake-doc-reminders-launchagent`;
+const RESTART_RECEIPT_CLI = process.env.BLT_LAUNCHD_RESTART_RECEIPT_CLI ||
+  `${HOME}/.blt-hub/runtime/blt-hub/dist/src/trust/launchd-restart-receipt-cli.js`;
+const NODE = "/opt/homebrew/opt/node@22/bin/node";
 
 function fail(message, code = 1) { process.stderr.write(`${message}\n`); process.exit(code); }
 
@@ -98,6 +101,13 @@ function atomicWrite(target, content) {
   fs.chmodSync(target, 0o600);
 }
 
+function restartReceipt(command) {
+  const args = command === "record"
+    ? [RESTART_RECEIPT_CLI, "record", LABEL, "15", "intake_doc_reminders_install"]
+    : [RESTART_RECEIPT_CLI, "complete", LABEL];
+  return execFileSync(NODE, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
 async function main() {
   const mode = process.argv[2] || "--install";
   if (!["--check", "--install"].includes(mode)) fail("usage: install-mac-launchagent.js [--check|--install]", 64);
@@ -136,6 +146,11 @@ async function main() {
   atomicWrite(path.join(backupDir, "state.json"), `${JSON.stringify({ ...snapshot, content: undefined })}\n`);
   const operations = {
     newContent,
+    recordRestartReceipt: async () => {
+      if (!fs.statSync(RESTART_RECEIPT_CLI).isFile()) throw new Error("launchd restart receipt CLI is not a regular file");
+      if (restartReceipt("record").trim() !== "owned") throw new Error("launchd restart receipt was not owned");
+    },
+    completeRestartReceipt: async () => restartReceipt("complete"),
     bootout: async () => { if (loaded()) launchctl(["bootout", `gui/${UID}/${LABEL}`]); },
     writeNew: async () => atomicWrite(PLIST, newContent),
     write: async (content) => atomicWrite(PLIST, content),
