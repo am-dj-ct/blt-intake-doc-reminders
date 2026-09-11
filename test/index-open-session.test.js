@@ -36,13 +36,15 @@ function canonicalFailover(events) {
   };
 }
 
-function harness({ accounts = ["blta"], loginFailures = [], identityFailure, busy = false, cleanupConfirmed = true } = {}) {
+function harness({ accounts = ["blta"], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true } = {}) {
   const events = [];
   let resolution = 0;
   const broker = canonicalFailover(events);
   const tn = {
     launch: async ({ profileDir }) => {
       events.push(`launch:${profileDir}`);
+      const failure = launchFailures.shift();
+      if (failure) throw failure;
       return { page: {}, context: {}, browser: {} };
     },
   };
@@ -171,6 +173,42 @@ test("identity failure cleans up but never retries", async () => {
   assert.equal(lane.resolutions(), 1);
   assert.equal(lane.events.includes("cleanup:/synthetic/profiles/blta/browser-profile"), true);
   assert.equal(lane.events.some((event) => event.startsWith("retry-after:")), false);
+});
+
+test("a cleaned Playwright persistent-context timeout re-acquires and retries once", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    launchFailures: [new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded."), null],
+  });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  const firstCleanup = lane.events.indexOf("cleanup:/synthetic/profiles/blta/browser-profile");
+  const secondResolve = lane.events.lastIndexOf("resolve:blta");
+  assert.ok(firstCleanup >= 0 && firstCleanup < secondResolve, JSON.stringify(lane.events));
+  assert.equal(lane.events.filter((event) => event.startsWith("launch:")).length, 2);
+  await opened.release();
+});
+
+test("a second persistent-context timeout is terminal", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    launchFailures: [
+      new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded."),
+      new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded."),
+    ],
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), /launchPersistentContext: Timeout/);
+  assert.equal(lane.resolutions(), 2);
+});
+
+test("cleanup uncertainty blocks a persistent-context retry", async () => {
+  const lane = harness({
+    launchFailures: [new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded.")],
+    cleanupConfirmed: false,
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), AggregateError);
+  assert.equal(lane.resolutions(), 1);
 });
 
 test("post-open work failure cannot enter the pre-work failover wrapper", async () => {

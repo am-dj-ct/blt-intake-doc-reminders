@@ -80,7 +80,7 @@ async function openTnSession(opts = {}, deps = {}) {
   const session = deps.tnAccountSession || tnAccountSession;
   session.isEnabled(env);
   const broker = deps.broker || loadBroker(env);
-  return broker.withPreWorkAccountFailover(async () => {
+  const openOnce = () => broker.withPreWorkAccountFailover(async () => {
     const { decision, dopplerReader } = await session.resolveAccount({ env, broker });
     const resolved = decision.resolved;
     const profileDir = session.profileDirFor(resolved.account);
@@ -137,6 +137,18 @@ async function openTnSession(opts = {}, deps = {}) {
       throw error;
     }
   });
+  try {
+    return await openOnce();
+  } catch (error) {
+    // A current system-Chrome startup can occasionally reach Playwright's
+    // bounded launch timeout before its control pipe is ready. openOnce only
+    // returns this original error after cleanup was confirmed; cleanup
+    // uncertainty is wrapped in an AggregateError and never reaches here.
+    // Re-resolve and re-acquire the account once instead of turning that
+    // transient, safely-cleaned browser start into an hourly outage.
+    if (!/^browserType\.launchPersistentContext: Timeout \d+ms exceeded\./.test(String(error?.message || ""))) throw error;
+    return openOnce();
+  }
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
