@@ -1,0 +1,10 @@
+# MAN029 attempt 2 — bounded browser-start retry
+
+- Fresh failure: the unforced `2026-09-11T18:35:00Z` slot started launchd PID 14032 and exited 1 at `18:44:04Z`; its real check-in was `red/job_failed`.
+- PHI-safe classification: the exact latest run segment contained Playwright `browserType.launchPersistentContext` timeout at 180000 ms and none of the prior cleanup/symlink, attestation, identity, login, send, or source-health fixed failure classes. A synthetic empty-profile launch with the production browser options reproduced the same timeout without accessing TherapyNotes or any source data.
+- Root cause: after a transient system-Chrome control-pipe startup timeout, the session opener completed its guarded browser/profile cleanup and released the exact account lock, but still made that safely cleaned transient failure terminal. The hourly wrapper therefore exited 1 without a bounded re-acquire/retry.
+- Correction: `openTnSession` retries exactly once only for Playwright's fixed persistent-context timeout signature. The first attempt must already have returned through confirmed cleanup; cleanup uncertainty is wrapped as an `AggregateError` and cannot enter the retry. The retry re-resolves the account and acquires a fresh broker lock. A second timeout and every unrelated failure remain terminal.
+- Focused UTC proof: `TZ=UTC NODE_PATH=/Users/alexmercer/blt-intake-doc-reminders/node_modules /opt/homebrew/opt/node@22/bin/node --test test/index-open-session.test.js test/tn-account-session.test.js test/sentinel-v5-wrapper-smoke.test.mjs` passed 42/42, with zero failures or skips. It covers retry ordering after cleanup, one-retry bound, cleanup-uncertainty refusal, existing account/login failover rules, cleanup safety, and green/degraded/red check-ins.
+- Scope: `index.js`, `test/index-open-session.test.js`, and this evidence file only. No source run, TherapyNotes access, reminder send, PHI/log-body output, queue mutation, installer, label change, or broad suite.
+
+COVERAGE: sufficient test:test/index-open-session.test.js,test/sentinel-v5-wrapper-smoke.test.mjs
