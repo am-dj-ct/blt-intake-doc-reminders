@@ -156,6 +156,24 @@ test("profile cleanup does not traverse account-level broker siblings", () => {
   );
 });
 
+test("profile cleanup rejects a symlinked account-directory ancestor without reaching its target", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-account-link-"));
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "intake-external-profile-"));
+  const externalProfile = path.join(external, "browser-profile");
+  fs.mkdirSync(externalProfile, { mode: 0o700 });
+  const marker = path.join(externalProfile, "untouched-marker");
+  fs.writeFileSync(marker, "synthetic");
+  fs.symlinkSync(external, path.join(base, "blta"));
+  const profile = session.profileDirFor("blta", base);
+
+  assert.throws(
+    () => session.securePathTree(profile, { lockOwnershipVerified: true }),
+    /not private and owner-controlled/,
+  );
+  assert.equal(fs.readFileSync(marker, "utf8"), "synthetic");
+  assert.equal(fs.statSync(marker).mode & 0o777, 0o644);
+});
+
 test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
   const navigations = [];
   const page = { goto: async (url) => navigations.push(url) };
