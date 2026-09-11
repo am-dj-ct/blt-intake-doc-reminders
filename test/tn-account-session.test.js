@@ -138,6 +138,24 @@ test("reviewed Chrome symlink names are rejected outside the exact profile root"
   );
 });
 
+test("profile cleanup does not traverse account-level broker siblings", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-account-sibling-"));
+  const profile = session.profileDirFor("blta", base);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  const accountDir = path.dirname(profile);
+  const brokerSibling = path.join(accountDir, "synthetic-broker-link");
+  fs.symlinkSync("synthetic-target", brokerSibling);
+
+  assert.doesNotThrow(() => session.securePathTree(profile, { lockOwnershipVerified: true }));
+  assert.equal(fs.lstatSync(brokerSibling).isSymbolicLink(), true);
+
+  fs.symlinkSync("synthetic-target", path.join(profile, "UnreviewedLink"));
+  assert.throws(
+    () => session.securePathTree(profile, { lockOwnershipVerified: true }),
+    /unapproved symlink/,
+  );
+});
+
 test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
   const navigations = [];
   const page = { goto: async (url) => navigations.push(url) };
