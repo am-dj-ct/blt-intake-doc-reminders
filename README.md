@@ -82,7 +82,10 @@ TN_ACCOUNT_BROKER_EXPECTED_TREE=<exact-broker-tree> \
 
 The installer backs up the prior plist and loaded/disabled state, replaces it
 atomically, and verifies the result. Any failure rolls all three back and
-verifies that restoration before returning an error. Logs remain in
+verifies that restoration before returning an error. Immediately before any
+launchd unload, the same installer records a 15-minute expiring restart receipt
+for `com.blt.intake-doc-reminders`; it completes that receipt only after the new
+state or a rollback is verified. Logs remain in
 `data/run.log`.
 
 Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCalendarInterval` array to change hours.

@@ -21,24 +21,34 @@ async function rollbackOne(snapshot, operations) {
 }
 
 async function replaceOneLaunchAgent({ snapshot, operations }) {
+  const restartReceiptOwned = Boolean(operations.recordRestartReceipt);
+  if (restartReceiptOwned) await operations.recordRestartReceipt();
+  let installed;
   try {
     await operations.bootout();
     await operations.writeNew();
     if (snapshot.disabledState !== "absent") await operations.enable();
     await operations.bootstrap();
-    const installed = await operations.inspect();
+    installed = await operations.inspect();
     const expectedState = snapshot.disabledState === "absent" ? "absent" : "enabled";
     if (!installed.exists || installed.disabledState !== expectedState || !installed.loaded || installed.content !== operations.newContent) {
       throw new Error("installed launch agent did not match the reviewed state");
     }
-    return installed;
   } catch (installError) {
     const rollbackErrors = await rollbackOne(snapshot, operations);
     if (rollbackErrors.length) {
       throw new AggregateError([installError, ...rollbackErrors], "installation failed and rollback is incomplete", { cause: installError });
     }
+    if (restartReceiptOwned) {
+      try { await operations.completeRestartReceipt(); }
+      catch (receiptError) {
+        throw new AggregateError([installError, receiptError], "installation failed; prior state was restored but restart receipt completion failed", { cause: installError });
+      }
+    }
     throw new Error("installation failed; prior state was verified restored", { cause: installError });
   }
+  if (restartReceiptOwned) await operations.completeRestartReceipt();
+  return installed;
 }
 
 module.exports = { replaceOneLaunchAgent, rollbackOne };
