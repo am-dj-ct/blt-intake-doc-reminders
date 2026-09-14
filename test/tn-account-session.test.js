@@ -69,8 +69,8 @@ test("broker mode is mandatory and legacy opt-out is refused", () => {
   assert.throws(() => session.isEnabled({ TN_ACCOUNT_SYSTEM: "0" }), /retired/);
 });
 
-test("resolution accepts primary blta and broker fallback blt2", async () => {
-  for (const account of ["blta", "blt2"]) {
+test("resolution accepts primary blta and broker fallbacks blt2 and bltj", async () => {
+  for (const account of ["blta", "blt2", "bltj"]) {
     let seen;
     const broker = fakeBroker({
       resolveAccountForRun: async (options) => { seen = options; return decision(account); },
@@ -84,9 +84,9 @@ test("resolution accepts primary blta and broker fallback blt2", async () => {
   }
 });
 
-test("bltj and malformed standard decisions fail before account lock use", async () => {
+test("a genuinely non-standard account and malformed standard decisions fail before account lock use", async () => {
   for (const malformed of [
-    { ...decision("bltj"), account: "bltj" },
+    { ...decision("bltx"), account: "bltx" },
     { ...decision("blt2"), account: "blta" },
     { ...decision("blt2"), usedFallback: false },
     { ...decision("blta"), lockClass: "wait-with-timeout" },
@@ -96,14 +96,20 @@ test("bltj and malformed standard decisions fail before account lock use", async
   }
 });
 
-test("profile routing is private and limited to the two standard accounts", () => {
+test("profile routing is private and limited to the three standard accounts", () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-profile-"));
   const profile = session.profileDirFor("blt2", base);
   session.securePathTree(profile, { lockOwnershipVerified: true });
   assert.equal(profile, path.join(base, "blt2", "browser-profile"));
   assert.equal(fs.statSync(path.join(base, "blt2")).mode & 0o777, 0o700);
   assert.equal(fs.statSync(profile).mode & 0o777, 0o700);
-  assert.throws(() => session.profileDirFor("bltj", base), /non-standard/);
+
+  const bltjProfile = session.profileDirFor("bltj", base);
+  session.securePathTree(bltjProfile, { lockOwnershipVerified: true });
+  assert.equal(bltjProfile, path.join(base, "bltj", "browser-profile"));
+  assert.equal(fs.statSync(bltjProfile).mode & 0o777, 0o700);
+
+  assert.throws(() => session.profileDirFor("bltx", base), /non-standard/);
 });
 
 test("only the four reviewed direct Chrome symlinks are removed, and only after lock proof", () => {
