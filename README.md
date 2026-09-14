@@ -26,9 +26,10 @@ Runs hourly (7am–8pm) on the Mac. Each run:
 
 Injected at runtime via `doppler run`. Present and working:
 
-- The canonical TherapyNotes broker resolves the approved `blta` / `blt2`
-  account credentials at runtime. This repo never reads a legacy credential
-  file or chooses a third account.
+- The canonical TherapyNotes broker resolves the approved `blta` / `blt2` /
+  `bltj` account credentials at runtime, in that order (bltj joined the
+  ordinary standard pool 2026-09-14). This repo never reads a legacy
+  credential file.
 - `BLT_AZURE_OPENAI_ENDPOINT` / `BLT_AZURE_OPENAI_DEPLOYMENT` / `BLT_AZURE_OPENAI_API_KEY` — doc classifier
 
 **Still needed before live email can send** (not currently in Doppler):
