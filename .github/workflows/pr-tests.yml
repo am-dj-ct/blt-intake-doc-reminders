@@ -3,6 +3,12 @@ name: PR tests
 on:
   pull_request:
     branches: [main]
+  # Also run on main itself (2026-09-14): blt-hub's sibling autodeploy loop
+  # only fast-forwards the live checkout when the main commit has a passing
+  # check run. Squash merges create a new sha that PR runs never cover, so
+  # without this the loop reported ci "none" and never deployed anything.
+  push:
+    branches: [main]
 
 concurrency:
   group: pr-tests-${{ github.ref }}
