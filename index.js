@@ -164,10 +164,16 @@ function humanAppt(start, now) {
   return `${start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${time}`;
 }
 
+// Returns an outcome string describing what this call did, so callers can
+// tell "correctly skipped, already handled" apart from "this intake still
+// needed something this run" — see runStatus's pendingCount below, which
+// depends on this distinction to avoid comparing sentCount against the
+// wrong denominator (every candidate ever seen, most of them already
+// handled on an earlier pass).
 async function dispatch(stage, it, now, sent, opts) {
   const apptISO = it.start.toISOString();
   const k = ledger.key(it.patientId, apptISO, stage);
-  if (sent.has(k) && !opts.force) { console.log(`  [skip] ${stage} — already sent for ${it.client}`); return; }
+  if (sent.has(k) && !opts.force) { console.log(`  [skip] ${stage} — already sent for ${it.client}`); return 'already-sent'; }
 
   const apptHuman = humanAppt(it.start, now);
   const hoursLeft = Math.max(1, Math.round((it.start - now) / HOUR));
@@ -180,7 +186,7 @@ async function dispatch(stage, it, now, sent, opts) {
     msg = templates.escalation({ client: it.client, clinicianName: it.clinician, apptHuman, missing: it.missing, hoursLeft });
   } else { // confirm
     const tEmail = CLINICIAN_EMAILS[it.clinician];
-    if (!tEmail) { console.log(`  [warn] no email mapped for clinician "${it.clinician}" — skipping confirm for ${it.client}`); return; }
+    if (!tEmail) { console.log(`  [warn] no email mapped for clinician "${it.clinician}" — skipping confirm for ${it.client}`); return 'no-email'; }
     to = tEmail; cc = [FRONTDESK];
     msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
   }
@@ -193,12 +199,13 @@ async function dispatch(stage, it, now, sent, opts) {
 
   console.log(`  [${opts.dryRun ? 'DRY' : 'SEND'}] ${stage}: ${it.client} (${apptHuman}) -> ${to}${cc.length ? ` cc ${cc.join(',')}` : ''}`);
   console.log(`          subject: ${subject}`);
-  if (opts.dryRun) return;
+  if (opts.dryRun) return 'dry-run';
 
   await sendEmail({ to, cc, subject, html: msg.html });
   sent.add(k);
   ledger.save(sent);
   console.log(`          sent.`);
+  return 'sent';
 }
 
 // Write the local PHI digest report: temp file then rename, so a reader
@@ -349,6 +356,14 @@ async function main() {
     const sent = ledger.load();
     const sentAtPhaseBStart = sent.size;
     const results = [];
+    // Every dispatch() outcome other than 'already-sent' represents an
+    // intake this run genuinely needed to act on (a fresh send, or a real
+    // gap like a missing clinician email mapping) — the correct denominator
+    // for "did sending keep up with need", unlike candidateCount (every
+    // appointment scraped, intake or not) or virtualIntakeCount (every
+    // virtual intake still in the 3-day window, most already handled on an
+    // earlier pass).
+    let pendingCount = 0;
     for (const it of intakes) {
       const rows = await tn.getDocumentTitles(page, it.patientId);
       const { hasSOD, hasGAINSS } = await classifyDocs(rows);
@@ -359,13 +374,15 @@ async function main() {
       const hoursToStart = (it.start - now) / HOUR;
       console.log(`\n${it.client} — ${it.clinician} — ${humanAppt(it.start, now)} (${hoursToStart.toFixed(1)}h) | docs: ${missing.length ? 'missing ' + missing.join('+') : 'all present'}`);
 
+      let outcome;
       if (missing.length === 0) {
-        await dispatch('confirm', it, now, sent, opts);
+        outcome = await dispatch('confirm', it, now, sent, opts);
       } else if (hoursToStart <= ESCALATION_HOURS) {
-        await dispatch('escalation', { ...it, missing }, now, sent, opts);
+        outcome = await dispatch('escalation', { ...it, missing }, now, sent, opts);
       } else {
-        await dispatch('nag', { ...it, missing }, now, sent, opts);
+        outcome = await dispatch('nag', { ...it, missing }, now, sent, opts);
       }
+      if (outcome !== 'already-sent') pendingCount += 1;
     }
 
     // Daily digest / heartbeat — once per day, first run at/after DIGEST_HOUR.
@@ -422,6 +439,7 @@ async function main() {
       apptCounts: Object.fromEntries(Object.entries(gridByDay).map(([ymd, day]) => [ymd, (day && day.grid ? day.grid.length : null)])),
       candidateCount: totalCandidateCount,
       virtualIntakeCount: intakes.length,
+      pendingCount,
       sentCount: sent.size - sentAtPhaseBStart,
       scrapeHealth: runHealthVerdict(gridByDay),
     };
