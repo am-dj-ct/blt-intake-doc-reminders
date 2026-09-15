@@ -39,6 +39,9 @@ const CLINICIAN_EMAILS = {
   'Ash Campbell': 'ash@balancedlivingtherapy.com',
   'Ray Power': 'ray@balancedlivingtherapy.com',
   'Brynnen Bailey-Lewis': 'brynnen@balancedlivingtherapy.com',
+  'Ann Bredin': 'ann@balancedlivingtherapy.com',
+  'Josephine Edmondson': 'josephine@balancedlivingtherapy.com',
+  'Yusuf Rahmani': 'yusuf@balancedlivingtherapy.com',
   'Jesse Dunn': 'jesse@balancedlivingtherapy.com',
 };
 
