@@ -30,19 +30,15 @@ const DIGEST_TO = 'sentinel@balancedlivingtherapy.com';
 const CLINICIAN_EMAILS = {
   'Brad Corcoran': 'brad@balancedlivingtherapy.com',
   'Stacy Gardea': 'stacyg@balancedlivingtherapy.com',
-  'Michaela Gayer': 'michaela@balancedlivingtherapy.com',
   'Maggie (Gigi) Ishaq': 'gigi@balancedlivingtherapy.com',
-  'Alicia Kuoch': 'alicia@balancedlivingtherapy.com',
   'Ally Latham': 'ally@balancedlivingtherapy.com',
   'Taylor Likes': 'taylorl@balancedlivingtherapy.com',
-  'Claire Popke': 'claire@balancedlivingtherapy.com',
   'Kristi Lyn Reddy': 'kristilyn@balancedlivingtherapy.com',
-  'Sam Stephens': 'sam@balancedlivingtherapy.com',
-  'Tessa Tesoriero': 'tessa@balancedlivingtherapy.com',
   'Thomas Matysik': 'thomas@balancedlivingtherapy.com',
   'Beth Wareing': 'beth@balancedlivingtherapy.com',
   'Ash Campbell': 'ash@balancedlivingtherapy.com',
   'Ray Power': 'ray@balancedlivingtherapy.com',
+  'Brynnen Bailey-Lewis': 'brynnen@balancedlivingtherapy.com',
   'Jesse Dunn': 'jesse@balancedlivingtherapy.com',
 };
 
