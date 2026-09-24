@@ -50,7 +50,9 @@ function hangingJob(dir) {
   writeFileSync(script, [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
-    "sleep 300 &",
+    // Reproduce the production failure: the direct shell exits on SIGTERM,
+    // while a descendant stays in the process group until SIGKILL.
+    "bash -c 'trap \"\" TERM; sleep 300' &",
     `printf '%s\\n' "$!" > ${JSON.stringify(childPid)}`,
     "wait",
     "",
@@ -152,16 +154,17 @@ test("wrapper: hard timeout kills the whole job group, exits 124, and writes red
       dir,
       override: script,
       env: {
-        BLT_INTAKE_DOC_REMINDERS_TIMEOUT_SECONDS: "1",
+        BLT_INTAKE_DOC_REMINDERS_TIMEOUT_SECONDS: "5",
         BLT_INTAKE_DOC_REMINDERS_STATUS_PATH: statusPath,
       },
     });
     assert.equal(run.result.status, 124, run.result.stderr);
-    assert.match(run.result.stderr, /run exceeded 1s/);
+    assert.match(run.result.stderr, /run exceeded 5s/);
     const status = JSON.parse(readFileSync(statusPath, "utf8"));
     assert.equal(status.health, "red");
     assert.equal(status.alertCode, "run_timeout");
     assert.equal(status.timedOut, true);
+    assert.equal(status.cleanupConfirmed, true);
     const pid = Number(readFileSync(childPid, "utf8").trim());
     assert.throws(() => process.kill(pid, 0), (error) => error?.code === "ESRCH");
     assert.equal(run.files.length, 0, "timeout kills the inner wrapper before its completion check-in; missed-slot detection remains armed");
