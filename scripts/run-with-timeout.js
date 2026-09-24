@@ -30,13 +30,14 @@ function parseArgs(argv) {
   return out;
 }
 
-function writeTimeoutStatus(statusPath, timeoutSeconds) {
+function writeTimeoutStatus(statusPath, timeoutSeconds, cleanupConfirmed = false) {
   const status = {
     ranAt: new Date().toISOString(),
     health: "red",
     alertCode: "run_timeout",
     timedOut: true,
     timeoutSeconds,
+    cleanupConfirmed,
     zeroIntakeCandidateStreak: 0,
   };
   fs.mkdirSync(path.dirname(statusPath), { recursive: true });
@@ -48,6 +49,17 @@ function writeTimeoutStatus(statusPath, timeoutSeconds) {
 function signalGroup(pid, signal) {
   try { process.kill(-pid, signal); }
   catch (error) { if (error.code !== "ESRCH") throw error; }
+}
+
+function groupAlive(pid) {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) {
+    if (error.code === "ESRCH") return false;
+    // kill(2) uses EPERM to say the group exists but this probe cannot signal
+    // every member. That is still "alive" for cleanup-confirmation purposes.
+    if (error.code === "EPERM") return true;
+    throw error;
+  }
 }
 
 function exitCodeForSignal(signal) {
@@ -66,16 +78,44 @@ function main() {
   let timedOut = false;
   let forwardedSignal = null;
   let killTimer = null;
+  let cleanupTimer = null;
+  let finished = false;
+
+  const finish = (code) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    if (killTimer) clearTimeout(killTimer);
+    if (cleanupTimer) clearTimeout(cleanupTimer);
+    process.exit(code);
+  };
+
+  const waitForGroupDeath = (deadline) => {
+    if (!groupAlive(child.pid)) {
+      try { writeTimeoutStatus(options.statusPath, options.timeoutSeconds, true); }
+      catch (error) { process.stderr.write(`[timeout] could not confirm red status artifact cleanup: ${error.message}\n`); }
+      finish(124);
+      return;
+    }
+    if (Date.now() >= deadline) {
+      signalGroup(child.pid, "SIGKILL");
+      process.stderr.write("[timeout] process group survived SIGKILL confirmation window; exiting 125 with cleanup unconfirmed\n");
+      finish(125);
+      return;
+    }
+    cleanupTimer = setTimeout(() => waitForGroupDeath(deadline), 100);
+  };
 
   const timeout = setTimeout(() => {
     timedOut = true;
-    try { writeTimeoutStatus(options.statusPath, options.timeoutSeconds); }
+    try { writeTimeoutStatus(options.statusPath, options.timeoutSeconds, false); }
     catch (error) { process.stderr.write(`[timeout] could not write red status artifact: ${error.message}\n`); }
     process.stderr.write(`[timeout] run exceeded ${options.timeoutSeconds}s; terminating its process group\n`);
     signalGroup(child.pid, "SIGTERM");
     killTimer = setTimeout(() => {
       process.stderr.write("[timeout] process group did not stop after SIGTERM; sending SIGKILL\n");
       signalGroup(child.pid, "SIGKILL");
+      waitForGroupDeath(Date.now() + options.killGraceSeconds * 1000);
     }, options.killGraceSeconds * 1000);
   }, options.timeoutSeconds * 1000);
 
@@ -87,18 +127,24 @@ function main() {
   process.once("SIGTERM", () => forward("SIGTERM"));
 
   child.once("error", (error) => {
-    clearTimeout(timeout);
-    if (killTimer) clearTimeout(killTimer);
     process.stderr.write(`[timeout] could not start run: ${error.message}\n`);
-    process.exit(1);
+    finish(1);
   });
   child.once("exit", (code, signal) => {
-    clearTimeout(timeout);
-    if (killTimer) clearTimeout(killTimer);
-    if (timedOut) process.exit(124);
-    if (forwardedSignal) process.exit(exitCodeForSignal(forwardedSignal));
-    if (signal) process.exit(exitCodeForSignal(signal));
-    process.exit(code == null ? 1 : code);
+    if (timedOut) {
+      // The direct child can exit on SIGTERM while a grandchild that ignored
+      // it remains in the detached group. Do not cancel the SIGKILL timer or
+      // return success until the entire process group is confirmed gone.
+      if (!groupAlive(child.pid)) {
+        try { writeTimeoutStatus(options.statusPath, options.timeoutSeconds, true); }
+        catch (error) { process.stderr.write(`[timeout] could not confirm red status artifact cleanup: ${error.message}\n`); }
+        finish(124);
+      }
+      return;
+    }
+    if (forwardedSignal) finish(exitCodeForSignal(forwardedSignal));
+    else if (signal) finish(exitCodeForSignal(signal));
+    else finish(code == null ? 1 : code);
   });
 }
 
