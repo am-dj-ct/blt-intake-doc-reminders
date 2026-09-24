@@ -10,6 +10,8 @@ test("the only browser launch uses the broker-selected persistent profile", () =
   const launch = source.match(/async function launch[\s\S]*?\n}\n/)?.[0] || "";
   assert.match(launch, /if \(!profileDir\).*broker-selected TherapyNotes profile/);
   assert.match(launch, /launchPersistentContext\(profileDir/);
+  assert.match(launch, /timeout: BROWSER_LAUNCH_TIMEOUT_MS/);
+  assert.match(launch, /error[.]alertCode = 'tn_browser_launch_timeout'/);
   assert.doesNotMatch(launch, /chromium[.]launch\(/);
 });
 

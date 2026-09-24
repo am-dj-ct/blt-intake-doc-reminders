@@ -80,7 +80,7 @@ async function openTnSession(opts = {}, deps = {}) {
   const session = deps.tnAccountSession || tnAccountSession;
   session.isEnabled(env);
   const broker = deps.broker || loadBroker(env);
-  const openOnce = () => broker.withPreWorkAccountFailover(async () => {
+  const openOnce = ({ recoverStaleEnvelope = false } = {}) => broker.withPreWorkAccountFailover(async () => {
     const { decision, dopplerReader } = await session.resolveAccount({ env, broker });
     const resolved = decision.resolved;
     const profileDir = session.profileDirFor(resolved.account);
@@ -89,6 +89,7 @@ async function openTnSession(opts = {}, deps = {}) {
       broker,
       env,
       browserProfileDir: profileDir,
+      recoverStaleEnvelope,
     });
     if (!lockSession.ok) return { skip: true, reason: lockSession.reason };
 
@@ -98,7 +99,6 @@ async function openTnSession(opts = {}, deps = {}) {
       if (!ownerCheck.ok) {
         throw new Error(`TN account lock ownership lost before browser launch (${ownerCheck.reason}).`);
       }
-      session.securePathTree(profileDir, { lockOwnershipVerified: true });
       launched = await tnLib.launch({ headless: !opts.headful, profileDir });
       // One call, deliberately: login, identity, and releasing the intent
       // marker the login wrote. Running the first two and forgetting the
@@ -137,17 +137,32 @@ async function openTnSession(opts = {}, deps = {}) {
       throw error;
     }
   });
+  const openWithEnvelopeRecovery = async ({ recoverStaleEnvelope = false } = {}) => {
+    try {
+      return await openOnce({ recoverStaleEnvelope });
+    } catch (error) {
+      // An interrupted Chrome run can leave ordinary profile files changed
+      // after the broker's last sealed fingerprint, even when no singleton
+      // symlink survives. The broker has already released the account lock
+      // when this error reaches us. Re-acquire the SAME account once and
+      // preserve the stale profile inside the ownership-proven prelaunch hook.
+      if (error?.code !== "session_envelope_mismatch") throw error;
+      return openOnce({ recoverStaleEnvelope: true });
+    }
+  };
   try {
-    return await openOnce();
+    return await openWithEnvelopeRecovery();
   } catch (error) {
     // A current system-Chrome startup can occasionally reach Playwright's
     // bounded launch timeout before its control pipe is ready. openOnce only
     // returns this original error after cleanup was confirmed; cleanup
     // uncertainty is wrapped in an AggregateError and never reaches here.
-    // Re-resolve and re-acquire the account once instead of turning that
-    // transient, safely-cleaned browser start into an hourly outage.
+    // Re-resolve and re-acquire the same account once. A launch timeout is a
+    // known stale-persistent-profile signature in this fleet, so preserve the
+    // failed profile and retry from a fresh one inside the broker-owned
+    // prelaunch window instead of opening the same broken bytes twice.
     if (!/^browserType\.launchPersistentContext: Timeout \d+ms exceeded\./.test(String(error?.message || ""))) throw error;
-    return openOnce();
+    return openWithEnvelopeRecovery({ recoverStaleEnvelope: true });
   }
 }
 
@@ -300,6 +315,33 @@ function reportSkippedRun(session, env = process.env) {
   return 'degraded';
 }
 
+function findSessionAlert(error, seen = new Set()) {
+  if (!error || seen.has(error)) return null;
+  seen.add(error);
+  if (error.alertCode) return error;
+  if (Array.isArray(error.errors)) {
+    for (const child of error.errors) {
+      const found = findSessionAlert(child, seen);
+      if (found) return found;
+    }
+  }
+  return findSessionAlert(error.cause, seen);
+}
+
+function reportTnSessionFailure(error, statusPath = STATUS_PATH, env = process.env) {
+  const alert = findSessionAlert(error);
+  if (!alert) return false;
+  writeRunStatus({
+    health: 'red',
+    alertCode: alert.alertCode,
+    stage: alert.stage,
+    timeoutMs: alert.timeoutMs,
+    zeroIntakeCandidateStreak: 0,
+  }, statusPath);
+  reportRunHealth('red', env);
+  return true;
+}
+
 async function main() {
   const opts = parseArgs();
   const now = opts.date ? new Date(`${opts.date}T${opts.time || '09:00'}:00`) : new Date();
@@ -317,7 +359,13 @@ async function main() {
     dates.push(tn.ymd(day));
   }
 
-  const session = await openTnSession(opts);
+  let session;
+  try {
+    session = await openTnSession(opts);
+  } catch (error) {
+    reportTnSessionFailure(error);
+    throw error;
+  }
   if (session.skip) {
     console.log(`\n[skip] TN account busy (skip-if-busy lock, reason=${session.reason || 'busy'}) — skipping this run cleanly; will retry next hourly pass.`);
     reportSkippedRun(session);
@@ -482,7 +530,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
