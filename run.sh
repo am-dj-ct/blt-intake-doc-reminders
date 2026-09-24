@@ -11,6 +11,31 @@ export TN_ACCOUNT=blta
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 node_bin="/opt/homebrew/opt/node@22/bin/node"
 
+# Re-enter the complete wrapper under a detached process-group supervisor.
+# This covers slot capture, the TherapyNotes browser, cleanup, and the final
+# Sentinel check-in. On timeout the supervisor kills the whole group, writes a
+# red status artifact, and exits 124 so launchd can start the next hourly run.
+if [[ "${BLT_INTAKE_DOC_REMINDERS_TIMEOUT_CHILD:-}" != "1" ]]; then
+  timeout_seconds=1200
+  timeout_status_path="$repo/data/status/latest.json"
+  dry_run_timeout_seam=0
+  for arg in "$@"; do [[ "$arg" == "--dry-run" ]] && dry_run_timeout_seam=1; done
+  if [[ "$dry_run_timeout_seam" == "1" && -n "${BLT_INTAKE_DOC_REMINDERS_JOB_OVERRIDE:-}" ]]; then
+    if [[ "${BLT_INTAKE_DOC_REMINDERS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]]; then
+      timeout_seconds="$BLT_INTAKE_DOC_REMINDERS_TIMEOUT_SECONDS"
+    fi
+    if [[ -n "${BLT_INTAKE_DOC_REMINDERS_STATUS_PATH:-}" ]]; then
+      timeout_status_path="$BLT_INTAKE_DOC_REMINDERS_STATUS_PATH"
+    fi
+  fi
+  export BLT_INTAKE_DOC_REMINDERS_TIMEOUT_CHILD=1
+  exec "$node_bin" "$repo/scripts/run-with-timeout.js" \
+    --timeout-seconds "$timeout_seconds" \
+    --status-path "$timeout_status_path" \
+    -- "$repo/run.sh" "$@"
+fi
+unset BLT_INTAKE_DOC_REMINDERS_TIMEOUT_CHILD
+
 # ---- Sentinel v5 (BLT fleet monitor) ------------------------------------
 # Capture the invocation slot FIRST, before anything that can fail, so a run
 # that dies in attestation or TN login still checks in red instead of going
@@ -75,6 +100,8 @@ if [[ -n "$health_file" ]]; then rm -f "$health_file"; fi
 
 if [[ "$rc" != "0" ]]; then
   # Attestation refusal (64/65), TN login/scrape failure, send failure, crash.
+  sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
+elif [[ "$health" == "red" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" red job_failed "$SENTINEL_AT" "$SENTINEL_SLOT"
 elif [[ "$health" == "degraded" ]]; then
   sentinel_checkin "$SENTINEL_ITEM" yellow degraded "$SENTINEL_AT" "$SENTINEL_SLOT"

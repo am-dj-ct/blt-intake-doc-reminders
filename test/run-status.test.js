@@ -15,7 +15,7 @@ test("writeRunStatus writes counts atomically with a timestamp", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-status-"));
   try {
     const file = path.join(dir, "nested", "latest.json");
-    writeRunStatus({ candidateCount: 3, virtualIntakeCount: 1, pendingCount: 1, sentCount: 1, scrapeHealth: "ok", cleanupWarning: false }, file);
+    writeRunStatus({ candidateCount: 3, virtualIntakeCount: 1, pendingCount: 1, sentCount: 1, scrapeHealth: "ok", health: "green", alertCode: null, zeroIntakeCandidateStreak: 0, cleanupWarning: false }, file);
     const written = JSON.parse(fs.readFileSync(file, "utf8"));
     assert.equal(written.candidateCount, 3);
     // pendingCount is the count of intakes this run actually needed to act
@@ -26,6 +26,8 @@ test("writeRunStatus writes counts atomically with a timestamp", () => {
     assert.equal(written.pendingCount, 1);
     assert.equal(written.sentCount, 1);
     assert.equal(written.cleanupWarning, false);
+    assert.equal(written.health, "green");
+    assert.equal(written.zeroIntakeCandidateStreak, 0);
     assert.equal(typeof written.ranAt, "string");
     // No leftover temp file.
     assert.deepEqual(fs.readdirSync(path.dirname(file)), ["latest.json"]);

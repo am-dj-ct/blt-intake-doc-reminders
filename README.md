@@ -101,9 +101,10 @@ Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCa
 
 | Outcome | Check-in |
 | --- | --- |
-| job exited 0 | green `ok` (a quiet day with zero intakes is green — the digest gate handles that by design) |
+| healthy job exited 0 | green `ok` |
+| 3 completed runs in a row find video candidates but classify zero intakes | red `job_failed` (pages; status artifact records the streak) |
 | job exited 0 but a day failed to load / clinician view still filtered | yellow `degraded` (digest only) |
-| job exited non-zero: pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
+| job exited non-zero: 20-minute wall-clock timeout, pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
 | no check-in by slot + grace | the sentinel's own missed-slot detection (pages) |
 
 The wrapper captures the slot before anything that can fail, never lets a
