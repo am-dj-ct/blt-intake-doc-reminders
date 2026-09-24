@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { writeRunStatus } = require("../index");
+const { reportTnSessionFailure, writeRunStatus } = require("../index");
 
 test("writeRunStatus writes counts atomically with a timestamp", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-status-"));
@@ -40,4 +40,26 @@ test("writeRunStatus is non-fatal when the path cannot be written", () => {
   // Passing a directory as the target file path forces an EISDIR-class
   // failure; the call must warn, not throw.
   assert.doesNotThrow(() => writeRunStatus({ ok: true }, os.tmpdir()));
+});
+
+test("a login-stage timeout writes a distinct red status artifact", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-login-timeout-status-"));
+  try {
+    const file = path.join(dir, "latest.json");
+    const timeout = Object.assign(new Error("synthetic login timeout"), {
+      code: "tn_session_stage_timeout",
+      alertCode: "tn_login_timeout",
+      stage: "login",
+      timeoutMs: 75_000,
+    });
+    const wrapped = new AggregateError([timeout], "synthetic cleanup wrapper", { cause: timeout });
+    assert.equal(reportTnSessionFailure(wrapped, file, {}), true);
+    const written = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(written.health, "red");
+    assert.equal(written.alertCode, "tn_login_timeout");
+    assert.equal(written.stage, "login");
+    assert.equal(written.timeoutMs, 75_000);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

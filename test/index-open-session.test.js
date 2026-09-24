@@ -36,7 +36,7 @@ function canonicalFailover(events) {
   };
 }
 
-function harness({ accounts = ["blta"], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true } = {}) {
+function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true } = {}) {
   const events = [];
   let resolution = 0;
   const broker = canonicalFailover(events);
@@ -57,18 +57,18 @@ function harness({ accounts = ["blta"], loginFailures = [], launchFailures = [],
       return { decision: { account, resolved: { account, username: `synthetic-${account}` } }, dopplerReader: async () => "" };
     },
     profileDirFor: (account) => `/synthetic/profiles/${account}/browser-profile`,
-    acquireSession: async ({ account, browserProfileDir }) => {
+    acquireSession: async ({ account, browserProfileDir, recoverStaleEnvelope }) => {
       events.push(`acquire:${account}:${browserProfileDir}`);
       if (busy) return { ok: false, reason: "busy" };
+      const failure = acquireFailures.shift();
+      if (failure) throw failure;
+      if (recoverStaleEnvelope) events.push(`quarantine:${browserProfileDir}`);
+      events.push(`secure:${browserProfileDir}`);
       return {
         ok: true,
         verifyStillOwner: () => { events.push(`owner-check:${account}`); return { ok: true }; },
         release: async () => ({ ok: true }),
       };
-    },
-    securePathTree: (profile, options) => {
-      assert.equal(options.lockOwnershipVerified, true);
-      events.push(`secure:${profile}`);
     },
     // Mirrors the real lib/tn-account-session.js sequencing: login, identity,
     // then release the marker the login wrote -- and NOT the release when
@@ -104,8 +104,8 @@ test("a successful primary session opens under blta and cleans up once", async (
   assert.deepEqual(lane.events, [
     "resolve:blta",
     "acquire:blta:/synthetic/profiles/blta/browser-profile",
-    "owner-check:blta",
     "secure:/synthetic/profiles/blta/browser-profile",
+    "owner-check:blta",
     "launch:/synthetic/profiles/blta/browser-profile",
     "login:blta",
     "identity:blta",
@@ -147,6 +147,17 @@ test("busy is a clean skip and never resolves or launches a second account", asy
   assert.equal(lane.events.some((event) => event.startsWith("owner-check:") || event.startsWith("secure:")), false);
 });
 
+test("an envelope mismatch re-acquires the same account and quarantines the stale profile once", async () => {
+  const mismatch = Object.assign(new Error("synthetic envelope mismatch"), { code: "session_envelope_mismatch" });
+  const lane = harness({ accounts: ["blta", "blta"], acquireFailures: [mismatch] });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  assert.equal(lane.events.includes("quarantine:/synthetic/profiles/blta/browser-profile"), true);
+  assert.equal(lane.events.filter((event) => event.startsWith("launch:")).length, 1);
+  await opened.release();
+});
+
 test("cleanup failure blocks fresh-login failover", async () => {
   const lane = harness({
     accounts: ["blta", "blt2"],
@@ -186,6 +197,7 @@ test("a cleaned Playwright persistent-context timeout re-acquires and retries on
   const firstCleanup = lane.events.indexOf("cleanup:/synthetic/profiles/blta/browser-profile");
   const secondResolve = lane.events.lastIndexOf("resolve:blta");
   assert.ok(firstCleanup >= 0 && firstCleanup < secondResolve, JSON.stringify(lane.events));
+  assert.equal(lane.events.includes("quarantine:/synthetic/profiles/blta/browser-profile"), true);
   assert.equal(lane.events.filter((event) => event.startsWith("launch:")).length, 2);
   await opened.release();
 });

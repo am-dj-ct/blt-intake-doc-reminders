@@ -131,6 +131,34 @@ test("only the four reviewed direct Chrome symlinks are removed, and only after 
   );
 });
 
+test("account acquisition quarantines a singleton-stale profile inside the broker-owned prelaunch window", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-prelaunch-links-"));
+  const profile = session.profileDirFor("blta", base);
+  session.securePathTree(profile, { lockOwnershipVerified: true });
+  const singleton = path.join(profile, "SingletonLock");
+  fs.symlinkSync("synthetic-target", singleton);
+  let callbackSeen = false;
+  const broker = fakeBroker({
+    acquireAccountSession: async (_account, options) => {
+      assert.equal(typeof options.onBeforeBrowserLaunch, "function");
+      await options.onBeforeBrowserLaunch({
+        verifyStillOwner: () => ({ ok: true }),
+      });
+      callbackSeen = true;
+      assert.equal(fs.existsSync(singleton), false);
+      assert.equal(fs.existsSync(profile), true);
+      const siblings = fs.readdirSync(path.dirname(profile));
+      const stale = siblings.find((entry) => entry.startsWith("browser-profile.stale-envelope-") && entry.endsWith("-singleton-prelaunch-recovery"));
+      assert.ok(stale);
+      assert.equal(fs.existsSync(path.join(path.dirname(profile), stale, "SingletonLock")), false);
+      return { ok: true, verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: true }) };
+    },
+  });
+
+  await session.acquireSession({ account: "blta", broker, env: {}, browserProfileDir: profile });
+  assert.equal(callbackSeen, true);
+});
+
 test("reviewed Chrome symlink names are rejected outside the exact profile root", () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "intake-nested-link-"));
   const profile = session.profileDirFor("blta", base);
@@ -203,6 +231,25 @@ test("stored sessions skip password submission; fresh sessions use canonical log
   assert.deepEqual(await session.ensureLogin({ page, broker: fresh, resolved: resolved(), env: {}, dopplerReader: async () => "" }), { freshLogin: true });
   assert.equal(submissions, 1);
   assert.equal(navigations.length, 2);
+});
+
+test("a stuck login is bounded and carries its own alert code", async () => {
+  const page = { goto: async () => {} };
+  const broker = fakeBroker({ therapyNotesLoginVisible: () => new Promise(() => {}) });
+  await assert.rejects(
+    () => session.ensureLoginAndIdentity({
+      page,
+      broker,
+      resolved: resolved(),
+      env: {},
+      dopplerReader: async () => "",
+      timeouts: { login: 20, identity: 20, login_marker_release: 20 },
+    }),
+    (error) => error.code === "tn_session_stage_timeout" &&
+      error.alertCode === "tn_login_timeout" &&
+      error.stage === "login" &&
+      error.timeoutMs === 20,
+  );
 });
 
 test("identity mismatch is a terminal pre-work error", async () => {
