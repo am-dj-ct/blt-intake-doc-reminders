@@ -33,7 +33,7 @@ const { loadBroker } = require('./lib/account-broker');
 const tnAccountSession = require('./lib/tn-account-session');
 const {
   SENDER, FRONTDESK, ALWAYS_CC, CLINICIAN_EMAILS,
-  WINDOW_HOURS, ESCALATION_HOURS, DIGEST_HOUR, DIGEST_TO,
+  WINDOW_HOURS, ESCALATION_HOURS, ZERO_INTAKE_ALERT_RUNS, DIGEST_HOUR, DIGEST_TO,
 } = require('./config');
 
 const CACHE_PATH = path.join(__dirname, 'data', 'appts.json');
@@ -263,6 +263,25 @@ function reportRunHealth(verdict, env = process.env) {
 // found, and how many reminder/digest sends actually happened this run.
 // Counts only — no client names, dates only as YMD, no PHI.
 const STATUS_PATH = path.join(__dirname, 'data', 'status', 'latest.json');
+function readRunStatus(statusPath = STATUS_PATH) {
+  try { return JSON.parse(fs.readFileSync(statusPath, 'utf8')); }
+  catch (e) { if (e.code === 'ENOENT' || e instanceof SyntaxError) return null; throw e; }
+}
+
+function classificationSignal({ candidateCount, virtualIntakeCount }, previousStatus = null, threshold = ZERO_INTAKE_ALERT_RUNS) {
+  const zeroIntakeRun = candidateCount > 0 && virtualIntakeCount === 0;
+  const previousStreak = Number.isInteger(previousStatus?.zeroIntakeCandidateStreak)
+    ? previousStatus.zeroIntakeCandidateStreak
+    : 0;
+  const zeroIntakeCandidateStreak = zeroIntakeRun ? previousStreak + 1 : 0;
+  const red = zeroIntakeCandidateStreak >= threshold;
+  return {
+    zeroIntakeCandidateStreak,
+    health: red ? 'red' : 'ok',
+    alertCode: red ? 'video_candidates_zero_intakes_streak' : null,
+  };
+}
+
 function writeRunStatus(status, statusPath = STATUS_PATH) {
   try {
     writeReportAtomically(statusPath, JSON.stringify({ ranAt: new Date().toISOString(), ...status }, null, 2));
@@ -307,6 +326,7 @@ async function main() {
   }
   const page = session.page;
   const cache = loadCache();
+  const previousStatus = readRunStatus();
   const intakes = [];
   // Full, unfiltered per-calendar-day scrape results (today + tomorrow), kept
   // alongside the in-window `intakes` used for dispatch. The digest gate needs
@@ -350,7 +370,16 @@ async function main() {
     }
     saveCache(cache, now);
     console.log(`\nVirtual intakes in window: ${intakes.length}`);
-    reportRunHealth(runHealthVerdict(gridByDay));
+    const scrapeHealth = runHealthVerdict(gridByDay);
+    const classification = classificationSignal({
+      candidateCount: totalCandidateCount,
+      virtualIntakeCount: intakes.length,
+    }, previousStatus);
+    const health = classification.health === 'red' ? 'red' : scrapeHealth === 'degraded' ? 'yellow' : 'green';
+    reportRunHealth(classification.health === 'red' ? 'red' : scrapeHealth);
+    if (classification.health === 'red') {
+      console.error(`[health] red: ${totalCandidateCount} video candidate(s), zero intakes, ${classification.zeroIntakeCandidateStreak} consecutive run(s)`);
+    }
 
     // Phase B: per intake, read documents, classify, run the state machine.
     const sent = ledger.load();
@@ -441,7 +470,10 @@ async function main() {
       virtualIntakeCount: intakes.length,
       pendingCount,
       sentCount: sent.size - sentAtPhaseBStart,
-      scrapeHealth: runHealthVerdict(gridByDay),
+      scrapeHealth,
+      health,
+      alertCode: classification.alertCode,
+      zeroIntakeCandidateStreak: classification.zeroIntakeCandidateStreak,
     };
   } finally {
     const released = await session.release();
@@ -450,7 +482,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

@@ -44,6 +44,21 @@ function fakeJob(dir, { rc = 0, health = "" } = {}) {
   return script;
 }
 
+function hangingJob(dir) {
+  const script = join(dir, "hanging-job.sh");
+  const childPid = join(dir, "browser-child.pid");
+  writeFileSync(script, [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "sleep 300 &",
+    `printf '%s\\n' "$!" > ${JSON.stringify(childPid)}`,
+    "wait",
+    "",
+  ].join("\n"));
+  chmodSync(script, 0o700);
+  return { script, childPid };
+}
+
 function runWrapper({ dir, args = ["--dry-run"], override, testNow = IN_WINDOW, env = {} }) {
   const spool = join(dir, "spool");
   const fallback = join(dir, "fallback.log");
@@ -117,6 +132,44 @@ test("wrapper: job that reports an untrusted scrape checks in yellow/degraded", 
   }
 });
 
+test("wrapper: classification anomaly checks in red even when the job exits zero", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const run = runWrapper({ dir, override: fakeJob(dir, { health: "red" }) });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assertSingleCheckin(run, "red", "job_failed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wrapper: hard timeout kills the whole job group, exits 124, and writes red status", { skip: !haveNode22 && "node@22 not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
+  try {
+    const { script, childPid } = hangingJob(dir);
+    const statusPath = join(dir, "status", "latest.json");
+    const run = runWrapper({
+      dir,
+      override: script,
+      env: {
+        BLT_INTAKE_DOC_REMINDERS_TIMEOUT_SECONDS: "1",
+        BLT_INTAKE_DOC_REMINDERS_STATUS_PATH: statusPath,
+      },
+    });
+    assert.equal(run.result.status, 124, run.result.stderr);
+    assert.match(run.result.stderr, /run exceeded 1s/);
+    const status = JSON.parse(readFileSync(statusPath, "utf8"));
+    assert.equal(status.health, "red");
+    assert.equal(status.alertCode, "run_timeout");
+    assert.equal(status.timedOut, true);
+    const pid = Number(readFileSync(childPid, "utf8").trim());
+    assert.throws(() => process.kill(pid, 0), (error) => error?.code === "ESRCH");
+    assert.equal(run.files.length, 0, "timeout kills the inner wrapper before its completion check-in; missed-slot detection remains armed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wrapper: non-zero job (e.g. TN login failure) checks in red/job_failed and preserves the exit code", { skip: !haveNode22 && "node@22 not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "idr-smoke-"));
   try {
@@ -178,5 +231,6 @@ test("wrapper source: sentinel capture precedes the job body; job body still att
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" red job_failed/);
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" yellow degraded/);
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" green ok/);
-  assert.doesNotMatch(src, /^\s*exec /m, "the wrapper must not exec away — it has to outlive the job to check in");
+  assert.match(src, /scripts\/run-with-timeout[.]js/);
+  assert.match(src, /--timeout-seconds "\$timeout_seconds"/);
 });
