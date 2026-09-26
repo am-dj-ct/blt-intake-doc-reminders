@@ -179,6 +179,13 @@ function humanAppt(start, now) {
   return `${start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${time}`;
 }
 
+function appointmentDecision(it, missing, opts, fixedNow, clock = () => new Date()) {
+  const now = opts.date ? fixedNow : clock();
+  const hoursToStart = (it.start - now) / HOUR;
+  const stage = missing.length === 0 ? 'confirm' : hoursToStart <= ESCALATION_HOURS ? 'escalation' : 'nag';
+  return { now, hoursToStart, stage };
+}
+
 // Returns an outcome string describing what this call did, so callers can
 // tell "correctly skipped, already handled" apart from "this intake still
 // needed something this run" — see runStatus's pendingCount below, which
@@ -455,16 +462,16 @@ async function main() {
       const missing = [];
       if (!hasSOD) missing.push('SOD');
       if (!hasGAINSS) missing.push('GAINSS');
-      const hoursToStart = (it.start - now) / HOUR;
-      console.log(`\n${it.client} — ${it.clinician} — ${humanAppt(it.start, now)} (${hoursToStart.toFixed(1)}h) | docs: ${missing.length ? 'missing ' + missing.join('+') : 'all present'}`);
+      const decision = appointmentDecision(it, missing, opts, now);
+      console.log(`\n${it.client} — ${it.clinician} — ${humanAppt(it.start, decision.now)} (${decision.hoursToStart.toFixed(1)}h) | docs: ${missing.length ? 'missing ' + missing.join('+') : 'all present'}`);
 
       let outcome;
-      if (missing.length === 0) {
-        outcome = await dispatch('confirm', it, now, sent, opts);
-      } else if (hoursToStart <= ESCALATION_HOURS) {
-        outcome = await dispatch('escalation', { ...it, missing }, now, sent, opts);
+      if (decision.stage === 'confirm') {
+        outcome = await dispatch('confirm', it, decision.now, sent, opts);
+      } else if (decision.stage === 'escalation') {
+        outcome = await dispatch('escalation', { ...it, missing }, decision.now, sent, opts);
       } else {
-        outcome = await dispatch('nag', { ...it, missing }, now, sent, opts);
+        outcome = await dispatch('nag', { ...it, missing }, decision.now, sent, opts);
       }
       if (outcome !== 'already-sent') pendingCount += 1;
     }
@@ -537,7 +544,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, dispatch, saveSentKey, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, dispatch, saveSentKey, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
