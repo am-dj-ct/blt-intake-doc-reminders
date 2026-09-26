@@ -216,9 +216,14 @@ async function dispatch(stage, it, now, sent, opts, deps = {}) {
     msg = templates.escalation({ client: it.client, clinicianName: it.clinician, apptHuman, missing: it.missing, hoursLeft });
   } else { // confirm
     const tEmail = CLINICIAN_EMAILS[it.clinician];
-    if (!tEmail) { console.log(`  [warn] no email mapped for clinician "${it.clinician}" — skipping confirm for ${it.client}`); return 'no-email'; }
-    to = tEmail; cc = [FRONTDESK];
-    msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
+    if (!tEmail) {
+      console.log(`  [warn] no email mapped for clinician "${it.clinician}" — sending confirm to front desk for forwarding`);
+      to = FRONTDESK;
+      msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman, needsForwarding: true });
+    } else {
+      to = tEmail; cc = [FRONTDESK];
+      msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
+    }
   }
 
   // jesse@ on every email; dedupe and never cc the primary recipient.
