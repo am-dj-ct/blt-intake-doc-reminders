@@ -185,9 +185,17 @@ function humanAppt(start, now) {
 // depends on this distinction to avoid comparing sentCount against the
 // wrong denominator (every candidate ever seen, most of them already
 // handled on an earlier pass).
-async function dispatch(stage, it, now, sent, opts) {
+function saveSentKey(sent, key, opts, ledgerLib = ledger) {
+  if (opts.test) return;
+  sent.add(key);
+  ledgerLib.save(sent);
+}
+
+async function dispatch(stage, it, now, sent, opts, deps = {}) {
+  const send = deps.sendEmail || sendEmail;
+  const ledgerLib = deps.ledger || ledger;
   const apptISO = it.start.toISOString();
-  const k = ledger.key(it.patientId, apptISO, stage);
+  const k = ledgerLib.key(it.patientId, apptISO, stage);
   if (sent.has(k) && !opts.force) { console.log(`  [skip] ${stage} — already sent for ${it.client}`); return 'already-sent'; }
 
   const apptHuman = humanAppt(it.start, now);
@@ -216,9 +224,8 @@ async function dispatch(stage, it, now, sent, opts) {
   console.log(`          subject: ${subject}`);
   if (opts.dryRun) return 'dry-run';
 
-  await sendEmail({ to, cc, subject, html: msg.html });
-  sent.add(k);
-  ledger.save(sent);
+  await send({ to, cc, subject, html: msg.html });
+  saveSentKey(sent, k, opts, ledgerLib);
   console.log(`          sent.`);
   return 'sent';
 }
@@ -478,7 +485,7 @@ async function main() {
 
       if (provablyEmpty) {
         console.log('[digest] skipped — no virtual intakes today, today+tomorrow scraped clean');
-        if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
+        if (!opts.dryRun) saveSentKey(sent, digestKey, opts);
       } else {
         // Split (Jesse ruling 2026-08-17): the PHI detail is written to a
         // local report file inside the protected boundary and never emailed;
@@ -508,7 +515,7 @@ async function main() {
         const to = opts.test ? SENDER : DIGEST_TO;
         const subj = opts.test ? `[TEST] ${subject}` : subject;
         console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  status sent; detail written locally.'); }
+        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); saveSentKey(sent, digestKey, opts); console.log('  status sent; detail written locally.'); }
       }
     }
     runStatus = {
@@ -530,7 +537,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, dispatch, saveSentKey, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
