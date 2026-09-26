@@ -236,4 +236,5 @@ test("wrapper source: sentinel capture precedes the job body; job body still att
   assert.match(src, /sentinel_checkin "\$SENTINEL_ITEM" green ok/);
   assert.match(src, /scripts\/run-with-timeout[.]js/);
   assert.match(src, /--timeout-seconds "\$timeout_seconds"/);
+  assert.match(src, /timeout_seconds=1800/);
 });

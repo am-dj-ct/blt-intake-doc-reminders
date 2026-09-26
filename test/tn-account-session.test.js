@@ -221,6 +221,7 @@ test("stored sessions skip password submission; fresh sessions use canonical log
     performAccountBrokerLogin: async (_page, config, target, options) => {
       submissions += 1;
       assert.equal(config.username, "synthetic-blta");
+      assert.equal(config.timeoutMs, session.LOGIN_ATTEMPT_TIMEOUT_MS);
       assert.equal(target, "https://www.therapynotes.com/app/scheduling/");
       assert.equal(options.account, "blta");
       assert.equal(options.isSuccessUrl("https://www.therapynotes.com/app/scheduling/#view=day"), true);

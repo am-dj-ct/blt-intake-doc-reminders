@@ -15,6 +15,11 @@ test("the only browser launch uses the broker-selected persistent profile", () =
   assert.doesNotMatch(launch, /chromium[.]launch\(/);
 });
 
+test("browser launch allows five minutes for a CPU-starved host", () => {
+  const tn = require("../lib/tn");
+  assert.equal(tn.BROWSER_LAUNCH_TIMEOUT_MS, 300_000);
+});
+
 test("every browser-capable helper uses the same brokered session seam", () => {
   const root = path.join(__dirname, "..");
   for (const relative of ["scripts/inspect-tn.js", "scripts/debug-login.js", "scripts/check-docs.js"]) {

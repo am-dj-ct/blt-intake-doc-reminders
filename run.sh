@@ -16,7 +16,7 @@ node_bin="/opt/homebrew/opt/node@22/bin/node"
 # Sentinel check-in. On timeout the supervisor kills the whole group, writes a
 # red status artifact, and exits 124 so launchd can start the next hourly run.
 if [[ "${BLT_INTAKE_DOC_REMINDERS_TIMEOUT_CHILD:-}" != "1" ]]; then
-  timeout_seconds=1200
+  timeout_seconds=1800
   timeout_status_path="$repo/data/status/latest.json"
   dry_run_timeout_seam=0
   for arg in "$@"; do [[ "$arg" == "--dry-run" ]] && dry_run_timeout_seam=1; done
