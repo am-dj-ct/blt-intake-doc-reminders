@@ -57,7 +57,7 @@ function render({ ownHead, ownTree, brokerRoot, brokerHead, brokerTree }) {
   <array>
 ${intervals()}
   </array>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Standard</string>
   <key>StandardOutPath</key><string>${LOG_DIR}/run.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/run.log</string>
 </dict>

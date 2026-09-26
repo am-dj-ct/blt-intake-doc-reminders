@@ -61,6 +61,10 @@ test("rendered launch agent carries two exact reviewed pairs and 14 hourly inter
   assert.match(content, /<key>TN_ACCOUNT<\/key><string>blta<\/string>/);
   assert.equal((content.match(/<key>Hour<\/key>/g) || []).length, 14);
   assert.match(content, /node@22/);
+  // Background class starved Chrome for 200+ s under load (2026-09-26 audit);
+  // this time-sensitive job must run as Standard.
+  assert.match(content, /<key>ProcessType<\/key><string>Standard<\/string>/);
+  assert.doesNotMatch(content, /<string>Background<\/string>/);
 });
 
 for (const failure of ["write", "enable", "bootstrap"]) {
