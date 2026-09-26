@@ -179,15 +179,30 @@ function humanAppt(start, now) {
   return `${start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${time}`;
 }
 
+function appointmentDecision(it, missing, opts, fixedNow, clock = () => new Date()) {
+  const now = opts.date ? fixedNow : clock();
+  const hoursToStart = (it.start - now) / HOUR;
+  const stage = missing.length === 0 ? 'confirm' : hoursToStart <= ESCALATION_HOURS ? 'escalation' : 'nag';
+  return { now, hoursToStart, stage };
+}
+
 // Returns an outcome string describing what this call did, so callers can
 // tell "correctly skipped, already handled" apart from "this intake still
 // needed something this run" — see runStatus's pendingCount below, which
 // depends on this distinction to avoid comparing sentCount against the
 // wrong denominator (every candidate ever seen, most of them already
 // handled on an earlier pass).
-async function dispatch(stage, it, now, sent, opts) {
+function saveSentKey(sent, key, opts, ledgerLib = ledger) {
+  if (opts.test) return;
+  sent.add(key);
+  ledgerLib.save(sent);
+}
+
+async function dispatch(stage, it, now, sent, opts, deps = {}) {
+  const send = deps.sendEmail || sendEmail;
+  const ledgerLib = deps.ledger || ledger;
   const apptISO = it.start.toISOString();
-  const k = ledger.key(it.patientId, apptISO, stage);
+  const k = ledgerLib.key(it.patientId, apptISO, stage);
   if (sent.has(k) && !opts.force) { console.log(`  [skip] ${stage} — already sent for ${it.client}`); return 'already-sent'; }
 
   const apptHuman = humanAppt(it.start, now);
@@ -201,9 +216,14 @@ async function dispatch(stage, it, now, sent, opts) {
     msg = templates.escalation({ client: it.client, clinicianName: it.clinician, apptHuman, missing: it.missing, hoursLeft });
   } else { // confirm
     const tEmail = CLINICIAN_EMAILS[it.clinician];
-    if (!tEmail) { console.log(`  [warn] no email mapped for clinician "${it.clinician}" — skipping confirm for ${it.client}`); return 'no-email'; }
-    to = tEmail; cc = [FRONTDESK];
-    msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
+    if (!tEmail) {
+      console.log(`  [warn] no email mapped for clinician "${it.clinician}" — sending confirm to front desk for forwarding`);
+      to = FRONTDESK;
+      msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman, needsForwarding: true });
+    } else {
+      to = tEmail; cc = [FRONTDESK];
+      msg = templates.confirm({ client: it.client, clinicianName: it.clinician, apptHuman });
+    }
   }
 
   // jesse@ on every email; dedupe and never cc the primary recipient.
@@ -216,9 +236,8 @@ async function dispatch(stage, it, now, sent, opts) {
   console.log(`          subject: ${subject}`);
   if (opts.dryRun) return 'dry-run';
 
-  await sendEmail({ to, cc, subject, html: msg.html });
-  sent.add(k);
-  ledger.save(sent);
+  await send({ to, cc, subject, html: msg.html });
+  saveSentKey(sent, k, opts, ledgerLib);
   console.log(`          sent.`);
   return 'sent';
 }
@@ -448,16 +467,16 @@ async function main() {
       const missing = [];
       if (!hasSOD) missing.push('SOD');
       if (!hasGAINSS) missing.push('GAINSS');
-      const hoursToStart = (it.start - now) / HOUR;
-      console.log(`\n${it.client} — ${it.clinician} — ${humanAppt(it.start, now)} (${hoursToStart.toFixed(1)}h) | docs: ${missing.length ? 'missing ' + missing.join('+') : 'all present'}`);
+      const decision = appointmentDecision(it, missing, opts, now);
+      console.log(`\n${it.client} — ${it.clinician} — ${humanAppt(it.start, decision.now)} (${decision.hoursToStart.toFixed(1)}h) | docs: ${missing.length ? 'missing ' + missing.join('+') : 'all present'}`);
 
       let outcome;
-      if (missing.length === 0) {
-        outcome = await dispatch('confirm', it, now, sent, opts);
-      } else if (hoursToStart <= ESCALATION_HOURS) {
-        outcome = await dispatch('escalation', { ...it, missing }, now, sent, opts);
+      if (decision.stage === 'confirm') {
+        outcome = await dispatch('confirm', it, decision.now, sent, opts);
+      } else if (decision.stage === 'escalation') {
+        outcome = await dispatch('escalation', { ...it, missing }, decision.now, sent, opts);
       } else {
-        outcome = await dispatch('nag', { ...it, missing }, now, sent, opts);
+        outcome = await dispatch('nag', { ...it, missing }, decision.now, sent, opts);
       }
       if (outcome !== 'already-sent') pendingCount += 1;
     }
@@ -478,7 +497,7 @@ async function main() {
 
       if (provablyEmpty) {
         console.log('[digest] skipped — no virtual intakes today, today+tomorrow scraped clean');
-        if (!opts.dryRun) { sent.add(digestKey); ledger.save(sent); }
+        if (!opts.dryRun) saveSentKey(sent, digestKey, opts);
       } else {
         // Split (Jesse ruling 2026-08-17): the PHI detail is written to a
         // local report file inside the protected boundary and never emailed;
@@ -508,7 +527,7 @@ async function main() {
         const to = opts.test ? SENDER : DIGEST_TO;
         const subj = opts.test ? `[TEST] ${subject}` : subject;
         console.log(`\n[digest] ${opts.dryRun ? 'DRY' : 'send'} -> ${to}: ${subj}`);
-        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); sent.add(digestKey); ledger.save(sent); console.log('  status sent; detail written locally.'); }
+        if (!opts.dryRun) { await sendEmail({ to, cc: [], subject: subj, html }); saveSentKey(sent, digestKey, opts); console.log('  status sent; detail written locally.'); }
       }
     }
     runStatus = {
@@ -530,7 +549,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, dispatch, saveSentKey, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
