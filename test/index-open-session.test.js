@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { openTnSession } = require("../index");
+const { openTnSession, isTransientPreWorkTimeout } = require("../index");
 
 function preworkError(account, outcome = "confirmed_rejection") {
   const error = new Error(`synthetic ${outcome}`);
@@ -11,6 +11,24 @@ function preworkError(account, outcome = "confirmed_rejection") {
   error.tnAccount = account;
   error.tnCleanupConfirmed = false;
   return error;
+}
+
+// Matches lib/tn-account-session.js's boundedSessionStage synthetic timeout
+// for the "login" stage — this is exactly the shape of the first 2026-09-26
+// production failure ("TherapyNotes login timed out after 180000ms").
+function loginStageTimeoutError() {
+  const error = new Error("TherapyNotes login timed out after 180000ms.");
+  error.code = "tn_session_stage_timeout";
+  error.stage = "login";
+  error.alertCode = "tn_login_timeout";
+  return error;
+}
+
+// Matches Playwright's own page.goto navigation timeout, raised inside
+// ensureLogin before the stage timeout would fire — the shape of the second
+// 2026-09-26 production failure.
+function pageGotoTimeoutError() {
+  return new Error("page.goto: Timeout 30000ms exceeded.");
 }
 
 function canonicalFailover(events) {
@@ -36,7 +54,7 @@ function canonicalFailover(events) {
   };
 }
 
-function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true } = {}) {
+function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true, cleanupSafeToClose = false } = {}) {
   const events = [];
   let resolution = 0;
   const broker = canonicalFailover(events);
@@ -83,7 +101,8 @@ function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = []
     },
     cleanupAndRelease: async ({ profileDir }) => {
       events.push(`cleanup:${profileDir}`);
-      return cleanupConfirmed ? { confirmed: true } : { confirmed: false, error: new Error("cleanup failed") };
+      if (cleanupConfirmed) return { confirmed: true, safeToClose: true };
+      return { confirmed: false, safeToClose: cleanupSafeToClose, error: new Error("cleanup failed") };
     },
     retryableFreshLoginRejection: (error) => error.code === "tn_account_prework_unavailable" && error.loginOutcome === "confirmed_rejection",
   };
@@ -220,6 +239,89 @@ test("cleanup uncertainty blocks a persistent-context retry", async () => {
     cleanupConfirmed: false,
   });
   await assert.rejects(() => openTnSession({}, lane.deps), AggregateError);
+  assert.equal(lane.resolutions(), 1);
+});
+
+test("isTransientPreWorkTimeout recognizes the two diagnosed 9/26 error shapes and nothing else", () => {
+  assert.equal(isTransientPreWorkTimeout(loginStageTimeoutError()), true);
+  assert.equal(isTransientPreWorkTimeout(pageGotoTimeoutError()), true);
+  assert.equal(isTransientPreWorkTimeout(new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded.")), false);
+  assert.equal(isTransientPreWorkTimeout(new Error("identity mismatch")), false);
+  assert.equal(isTransientPreWorkTimeout(preworkError("blta")), false);
+  assert.equal(isTransientPreWorkTimeout(undefined), false);
+});
+
+test("a transient login-stage timeout retries once on the same account and succeeds", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    loginFailures: [loginStageTimeoutError(), null],
+  });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  const firstCleanup = lane.events.indexOf("cleanup:/synthetic/profiles/blta/browser-profile");
+  const secondResolve = lane.events.lastIndexOf("resolve:blta");
+  assert.ok(firstCleanup >= 0 && firstCleanup < secondResolve, JSON.stringify(lane.events));
+  assert.equal(lane.events.filter((event) => event.startsWith("login:")).length, 2);
+  await opened.release();
+});
+
+test("a transient page.goto timeout retries once on the same account and succeeds", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    loginFailures: [pageGotoTimeoutError(), null],
+  });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  await opened.release();
+});
+
+test("a second transient login timeout is terminal -- no third attempt", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    loginFailures: [loginStageTimeoutError(), loginStageTimeoutError()],
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), /login timed out/);
+  assert.equal(lane.resolutions(), 2);
+  assert.equal(lane.events.filter((event) => event.startsWith("login:")).length, 2);
+});
+
+test("a cosmetic cleanup failure (browser confirmed dead, lock released) still allows a transient-timeout retry", async () => {
+  // Reproduces the actual 2026-09-26 production shape: cleanupAndRelease
+  // returns confirmed:false only because the polite context/browser close
+  // timed out, while safeToClose is true because the broker's kill-and-
+  // confirm already proved the browser dead and the lock released. Before
+  // this fix, that made openTnSession throw the "pre-work failure and
+  // cleanup both failed" AggregateError and skip the retry entirely.
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    loginFailures: [loginStageTimeoutError(), null],
+    cleanupConfirmed: false,
+    cleanupSafeToClose: true,
+  });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  await opened.release();
+});
+
+test("an unsafe cleanup failure still blocks a transient-timeout retry", async () => {
+  const lane = harness({
+    loginFailures: [loginStageTimeoutError()],
+    cleanupConfirmed: false,
+    cleanupSafeToClose: false,
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), AggregateError);
+  assert.equal(lane.resolutions(), 1);
+});
+
+test("a non-transient login failure never retries", async () => {
+  const lane = harness({
+    accounts: ["blta", "blt2"],
+    loginFailures: [new Error("some other login failure")],
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), /some other login failure/);
   assert.equal(lane.resolutions(), 1);
 });
 
