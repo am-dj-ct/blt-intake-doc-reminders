@@ -74,6 +74,21 @@ function saveCache(obj, now) {
 // from a fresh password submission may select the other standard account one
 // time, but only after this exact browser is dead and this exact lock release
 // is confirmed. Busy, cleanup, identity, and all post-open work never retry.
+//
+// A transient pre-work timeout (TherapyNotes login stage timeout, or a bare
+// page.goto navigation timeout inside ensureLogin) is a host-contention
+// symptom, not an account or credential problem — diagnosed 2026-09-27 after
+// two hourly runs failed loudly on 9/26 while other Chrome jobs were busy
+// around the same :35 tick. Both observed failures had already confirmed the
+// browser dead and the account lock released (cleanup's `safeToClose`); only
+// the cosmetic graceful-close ever timed out. isTransientPreWorkTimeout names
+// exactly the error shapes worth one same-account retry.
+function isTransientPreWorkTimeout(error) {
+  if (error?.code === "tn_session_stage_timeout" && error?.stage === "login") return true;
+  if (/^page\.goto: Timeout \d+ms exceeded\.$/.test(String(error?.message || ""))) return true;
+  return false;
+}
+
 async function openTnSession(opts = {}, deps = {}) {
   const env = deps.env || process.env;
   const tnLib = deps.tn || tn;
@@ -132,7 +147,20 @@ async function openTnSession(opts = {}, deps = {}) {
         broker.confirmPreWorkFailoverCleanup(error, resolved.account);
       }
       if (!cleanup.confirmed) {
-        throw new AggregateError([error, cleanup.error], "TherapyNotes pre-work failure and cleanup both failed.", { cause: error });
+        // Same distinction the release() path above already draws: `confirmed`
+        // is strict (any soft OR hard cleanup error fails it), but a graceful
+        // context/browser close timing out is cosmetic once cleanup's harder
+        // checks (browser death, lock release) are themselves confirmed. Treat
+        // that case as closed — warn and surface the ORIGINAL pre-work error —
+        // so a transient-timeout retry above can recognize it instead of
+        // seeing only this catch-all AggregateError. A teardown that is not
+        // safe (death unconfirmed or lock not released) still fails loudly and
+        // is never retried.
+        if (cleanup.safeToClose) {
+          console.warn(`[cleanup] graceful browser close was imperfect but teardown is confirmed: ${cleanup.error?.message}`);
+        } else {
+          throw new AggregateError([error, cleanup.error], "TherapyNotes pre-work failure and cleanup both failed.", { cause: error });
+        }
       }
       throw error;
     }
@@ -161,8 +189,21 @@ async function openTnSession(opts = {}, deps = {}) {
     // known stale-persistent-profile signature in this fleet, so preserve the
     // failed profile and retry from a fresh one inside the broker-owned
     // prelaunch window instead of opening the same broken bytes twice.
-    if (!/^browserType\.launchPersistentContext: Timeout \d+ms exceeded\./.test(String(error?.message || ""))) throw error;
-    return openWithEnvelopeRecovery({ recoverStaleEnvelope: true });
+    if (/^browserType\.launchPersistentContext: Timeout \d+ms exceeded\./.test(String(error?.message || ""))) {
+      return openWithEnvelopeRecovery({ recoverStaleEnvelope: true });
+    }
+    // A transient login/page-contention timeout only reaches this bare form
+    // when cleanup already confirmed the browser dead and the account lock
+    // released (see the safeToClose handling above) — so it is safe to
+    // re-resolve and re-acquire the same pool once, exactly like the two
+    // retries above. This is a single, un-looped retry: if the retry itself
+    // throws (transient again, or anything else), it propagates straight out
+    // and this run fails loudly with no third attempt. Nothing before this
+    // point in main() sends a reminder, so a retry here can never double-send.
+    if (isTransientPreWorkTimeout(error)) {
+      return openWithEnvelopeRecovery();
+    }
+    throw error;
   }
 }
 
@@ -549,7 +590,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, dispatch, saveSentKey, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
