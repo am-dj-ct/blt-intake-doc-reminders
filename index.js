@@ -243,7 +243,10 @@ async function dispatch(stage, it, now, sent, opts, deps = {}) {
   const send = deps.sendEmail || sendEmail;
   const ledgerLib = deps.ledger || ledger;
   const apptISO = it.start.toISOString();
-  const k = ledgerLib.key(it.patientId, apptISO, stage);
+  // Identity is the client, not it.patientId: see lib/ledger.js's header for
+  // why keying on the TN patient id let the same intake occasion double-send
+  // on 2026-09-28.
+  const k = ledgerLib.key(it.client, apptISO, stage);
   if (sent.has(k) && !opts.force) { console.log(`  [skip] ${stage} — already sent for ${it.client}`); return 'already-sent'; }
 
   const apptHuman = humanAppt(it.start, now);
@@ -465,7 +468,14 @@ async function main() {
       totalCandidateCount += candidates.length;
 
       for (const a of candidates) {
-        const key = `${a.clinician}|${a.client}|${a.start.toISOString()}`;
+        // Keyed on client+time only, not clinician: TN can relabel which
+        // clinician's column an appointment is filed under (a benign
+        // schedule edit) without changing the client or the appointment
+        // time. Including the clinician here forced a needless
+        // re-classification on relabel, which on 2026-09-28 came back with a
+        // different patient id for the same appointment and fed a
+        // duplicate-send bug in the ledger key (see lib/ledger.js).
+        const key = `${a.client}|${a.start.toISOString()}`;
         let cls = cache[key];
         if (!cls) {
           cls = await tn.classifyAppointment(page, a.aria);

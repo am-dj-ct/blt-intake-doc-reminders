@@ -122,7 +122,7 @@ in the plist changes, change the fragment row's cron to match.
 - `lib/classify.js` — Azure OpenAI SOD/GAINSS presence judgment
 - `lib/send.js` — Microsoft Graph sendMail
 - `lib/templates.js` — the three email templates
-- `lib/ledger.js` — per-(patient+appt+stage) sent record (`data/sent.json`)
+- `lib/ledger.js` — per-(client+appt+stage) sent record (`data/sent.json`)
 - `config.js` — recipients, clinician→email map, CPT, timing
 - `scripts/` — `inspect-tn.js`, `check-docs.js`, `debug-login.js` (diagnostics)
 - `scripts/install-mac-launchagent.js`, `install-mac-launchagent.sh`, `run.sh` — reviewed scheduling and transactional cutover
