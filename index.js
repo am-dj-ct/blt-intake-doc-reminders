@@ -239,6 +239,41 @@ function saveSentKey(sent, key, opts, ledgerLib = ledger) {
   ledgerLib.save(sent);
 }
 
+// One-time forward migration for ledger entries written before the dedupe
+// key moved from the TN patient id to the client's own identity (see
+// lib/ledger.js's header for why). A new-format key's identity segment is a
+// 16-hex-char hash; anything else in `sent` is a legacy patient-id key. The
+// classify cache still maps that legacy patient id back to a client (it's
+// the same value classifyAppointment() read when the entry was written), so
+// resolve it and add the equivalent new-format key -- otherwise an
+// appointment already nagged under the old scheme would look unsent the
+// first time this code runs and would send again. A legacy key that can't
+// be resolved (its cache entry aged out) is left alone; PRUNE_DAYS will drop
+// it once its appointment is old enough.
+const NEW_FORMAT_KEY_PATTERN = /^[0-9a-f]{16}@/;
+function migrateLegacyLedgerKeys(sent, cache, ledgerLib = ledger) {
+  const patientIdToClient = new Map();
+  for (const cacheKey of Object.keys(cache)) {
+    const parts = cacheKey.split('|');
+    if (parts.length < 2) continue;
+    const client = parts[parts.length - 2];
+    const cls = cache[cacheKey];
+    if (cls && cls.patientId) patientIdToClient.set(cls.patientId, client);
+  }
+  let migrated = false;
+  for (const legacyKey of [...sent]) {
+    if (NEW_FORMAT_KEY_PATTERN.test(legacyKey)) continue;
+    const m = /^([^@]+)@([^#]+)#(.+)$/.exec(legacyKey);
+    if (!m) continue;
+    const [, legacyPatientId, apptISO, stage] = m;
+    const client = patientIdToClient.get(legacyPatientId);
+    if (!client) continue;
+    const newKey = ledgerLib.key(client, apptISO, stage);
+    if (!sent.has(newKey)) { sent.add(newKey); migrated = true; }
+  }
+  return migrated;
+}
+
 async function dispatch(stage, it, now, sent, opts, deps = {}) {
   const send = deps.sendEmail || sendEmail;
   const ledgerLib = deps.ledger || ledger;
@@ -501,6 +536,7 @@ async function main() {
 
     // Phase B: per intake, read documents, classify, run the state machine.
     const sent = ledger.load();
+    if (!opts.test && !opts.dryRun && migrateLegacyLedgerKeys(sent, cache)) ledger.save(sent);
     const sentAtPhaseBStart = sent.size;
     const results = [];
     // Every dispatch() outcome other than 'already-sent' represents an
@@ -600,7 +636,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportRunHealth, reportSkippedRun, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this
