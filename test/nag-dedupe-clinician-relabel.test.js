@@ -81,3 +81,53 @@ test("a clinician-column relabel between runs must not resend the same client's 
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("legacy patient-id-keyed ledger entries migrate forward without resending", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intake-nag-migrate-"));
+  const ledgerPath = path.join(dir, "sent.json");
+  const start = new Date("2099-09-29T18:00:00.000Z");
+  const stage = "nag";
+
+  // Simulate the pre-fix ledger: two legacy, patient-id-keyed entries for
+  // the SAME client + appointment slot (the double-send itself), because two
+  // different clinician labels were cached across runs.
+  const legacyKeyA = `synthetic-patient-A@${start.toISOString()}#${stage}`;
+  const legacyKeyB = `synthetic-patient-B@${start.toISOString()}#${stage}`;
+  realLedger.save(new Set([legacyKeyA, legacyKeyB]), ledgerPath);
+
+  // Simulate the classify cache (data/appts.json) as it would look after the
+  // clinician relabel: two entries, different clinicians, same client and
+  // time, one patient id each -- matching the two legacy ledger keys above.
+  const cache = {
+    "Synthetic Clinician A|Synthetic Client|2099-09-29T18:00:00.000Z": { patientId: "synthetic-patient-A", isIntake: true, isTelehealth: true },
+    "Synthetic Clinician B|Synthetic Client|2099-09-29T18:00:00.000Z": { patientId: "synthetic-patient-B", isIntake: true, isTelehealth: true },
+  };
+
+  const sent = realLedger.load(ledgerPath);
+  const { migrateLegacyLedgerKeys } = require("../index");
+  const migrated = migrateLegacyLedgerKeys(sent, cache, { key: realLedger.key, save: (s) => realLedger.save(s, ledgerPath) });
+  assert.equal(migrated, true);
+
+  const expectedNewKey = realLedger.key("Synthetic Client", start.toISOString(), stage);
+  assert.ok(sent.has(expectedNewKey), "migration must add the new client-identity key");
+
+  // The run's own dispatch check must now see it as already sent, with no
+  // resend, even though this run's classify happened to read yet another
+  // (fresh) patient id for the same appointment.
+  const sends = [];
+  const outcome = await dispatch("nag", {
+    patientId: "synthetic-patient-C",
+    client: "Synthetic Client",
+    clinician: "Synthetic Clinician C",
+    start,
+    missing: ["SOD"],
+  }, new Date("2099-09-29T03:35:00.000Z"), sent, { dryRun: false, test: false, force: false }, {
+    sendEmail: async (msg) => sends.push(msg),
+    ledger: { key: realLedger.key, save: (s) => realLedger.save(s, ledgerPath) },
+  });
+
+  assert.equal(outcome, "already-sent");
+  assert.equal(sends.length, 0);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
