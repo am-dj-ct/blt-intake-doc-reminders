@@ -210,7 +210,7 @@ test("profile cleanup rejects a symlinked account-directory ancestor without rea
 
 test("stored sessions skip password submission; fresh sessions use canonical login once", async () => {
   const navigations = [];
-  const page = { goto: async (url) => navigations.push(url) };
+  const page = { goto: async (url, options) => navigations.push({ url, options }) };
   let submissions = 0;
   const stored = fakeBroker({ therapyNotesLoginVisible: async () => false });
   assert.deepEqual(await session.ensureLogin({ page, broker: stored, resolved: resolved(), env: {}, dopplerReader: async () => "" }), { freshLogin: false });
@@ -232,6 +232,8 @@ test("stored sessions skip password submission; fresh sessions use canonical log
   assert.deepEqual(await session.ensureLogin({ page, broker: fresh, resolved: resolved(), env: {}, dopplerReader: async () => "" }), { freshLogin: true });
   assert.equal(submissions, 1);
   assert.equal(navigations.length, 2);
+  assert.deepEqual(navigations[0].options, { waitUntil: "domcontentloaded", timeout: session.LOGIN_ATTEMPT_TIMEOUT_MS });
+  assert.deepEqual(navigations[1].options, { waitUntil: "domcontentloaded", timeout: session.LOGIN_ATTEMPT_TIMEOUT_MS });
 });
 
 test("a stuck login is bounded and carries its own alert code", async () => {
@@ -283,7 +285,8 @@ test("assertIdentityOrThrow passes a warn callback through so the read's own dia
   });
   await assert.rejects(
     () => session.assertIdentityOrThrow({ page: {}, broker, resolved: resolved(), warn: (message) => { warned = message; } }),
-    /identity_read_error/,
+    (error) => error.code === "tn_identity_transient_read_error" &&
+      error.alertCode === "tn_identity_read_error" && /identity_read_error/.test(error.message),
   );
   assert.equal(warned, "tn_identity.read_failed diagnostic");
 });
@@ -305,6 +308,29 @@ test("cleanup confirms context death before releasing the exact lock", async () 
   const result = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker, timeoutMs: 20 });
   assert.equal(result.confirmed, true);
   assert.deepEqual(events, ["context-close", "death-proof", "owner-check", "release"]);
+});
+
+test("cleanup gives authoritative browser-death proof its longer production budget", async () => {
+  let observedMaxWaitMs = null;
+  const launched = {
+    context: { close: async () => {} },
+    browser: { isConnected: () => false, close: async () => {} },
+  };
+  const broker = fakeBroker({ lock: { killProfileDirAndConfirm: async (_profile, _signal, options) => {
+    observedMaxWaitMs = options.maxWaitMs;
+    return { confirmed: true, stillAlive: [] };
+  } } });
+  const profileDir = session.profileDirFor("blta", fs.mkdtempSync(path.join(os.tmpdir(), "intake-death-budget-")));
+  session.securePathTree(profileDir, { lockOwnershipVerified: true });
+  const result = await session.cleanupAndRelease({
+    launched,
+    profileDir,
+    broker,
+    lockSession: { verifyStillOwner: () => ({ ok: true }), release: async () => ({ ok: true }) },
+  });
+  assert.equal(result.confirmed, true);
+  assert.equal(observedMaxWaitMs, session.BROWSER_DEATH_CONFIRM_TIMEOUT_MS);
+  assert.ok(observedMaxWaitMs > session.CLEANUP_TIMEOUT_MS);
 });
 
 test("unconfirmed browser death leaves the account lock held", async () => {

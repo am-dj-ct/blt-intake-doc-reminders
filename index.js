@@ -85,6 +85,7 @@ function saveCache(obj, now) {
 // exactly the error shapes worth one same-account retry.
 function isTransientPreWorkTimeout(error) {
   if (error?.code === "tn_session_stage_timeout" && error?.stage === "login") return true;
+  if (error?.code === "tn_identity_transient_read_error") return true;
   if (/^page\.goto: Timeout \d+ms exceeded\.$/.test(String(error?.message || ""))) return true;
   return false;
 }
