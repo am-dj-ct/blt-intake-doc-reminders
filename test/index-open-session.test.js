@@ -31,6 +31,13 @@ function pageGotoTimeoutError() {
   return new Error("page.goto: Timeout 30000ms exceeded.");
 }
 
+function identityReadError() {
+  const error = new Error('TN identity assertion failed for account "blta": identity_read_error');
+  error.code = "tn_identity_transient_read_error";
+  error.alertCode = "tn_identity_read_error";
+  return error;
+}
+
 function canonicalFailover(events) {
   return {
     withPreWorkAccountFailover: async (runAttempt) => {
@@ -54,7 +61,7 @@ function canonicalFailover(events) {
   };
 }
 
-function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = [], launchFailures = [], identityFailure, busy = false, cleanupConfirmed = true, cleanupSafeToClose = false } = {}) {
+function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = [], launchFailures = [], identityFailure, identityFailures = [], busy = false, cleanupConfirmed = true, cleanupSafeToClose = false } = {}) {
   const events = [];
   let resolution = 0;
   const broker = canonicalFailover(events);
@@ -96,7 +103,8 @@ function harness({ accounts = ["blta"], acquireFailures = [], loginFailures = []
       const failure = loginFailures[resolution - 1];
       if (failure) throw failure;
       events.push(`identity:${resolved.account}`);
-      if (identityFailure) throw identityFailure;
+      const currentIdentityFailure = identityFailures[resolution - 1] || identityFailure;
+      if (currentIdentityFailure) throw currentIdentityFailure;
       events.push(`confirm-marker:${resolved.account}`);
     },
     cleanupAndRelease: async ({ profileDir }) => {
@@ -242,13 +250,37 @@ test("cleanup uncertainty blocks a persistent-context retry", async () => {
   assert.equal(lane.resolutions(), 1);
 });
 
-test("isTransientPreWorkTimeout recognizes the two diagnosed 9/26 error shapes and nothing else", () => {
+test("isTransientPreWorkTimeout recognizes the diagnosed transient pre-work error shapes and nothing else", () => {
   assert.equal(isTransientPreWorkTimeout(loginStageTimeoutError()), true);
   assert.equal(isTransientPreWorkTimeout(pageGotoTimeoutError()), true);
+  assert.equal(isTransientPreWorkTimeout(identityReadError()), true);
   assert.equal(isTransientPreWorkTimeout(new Error("browserType.launchPersistentContext: Timeout 180000ms exceeded.")), false);
   assert.equal(isTransientPreWorkTimeout(new Error("identity mismatch")), false);
   assert.equal(isTransientPreWorkTimeout(preworkError("blta")), false);
   assert.equal(isTransientPreWorkTimeout(undefined), false);
+});
+
+test("a broker identity read exception retries once after confirmed teardown", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    identityFailures: [identityReadError(), null],
+  });
+  const opened = await openTnSession({}, lane.deps);
+  assert.equal(opened.account, "blta");
+  assert.equal(lane.resolutions(), 2);
+  const firstCleanup = lane.events.indexOf("cleanup:/synthetic/profiles/blta/browser-profile");
+  const secondResolve = lane.events.lastIndexOf("resolve:blta");
+  assert.ok(firstCleanup >= 0 && firstCleanup < secondResolve, JSON.stringify(lane.events));
+  await opened.release();
+});
+
+test("a second broker identity read exception is terminal", async () => {
+  const lane = harness({
+    accounts: ["blta", "blta"],
+    identityFailures: [identityReadError(), identityReadError()],
+  });
+  await assert.rejects(() => openTnSession({}, lane.deps), /identity_read_error/);
+  assert.equal(lane.resolutions(), 2);
 });
 
 test("a transient login-stage timeout retries once on the same account and succeeds", async () => {
