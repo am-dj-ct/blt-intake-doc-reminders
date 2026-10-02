@@ -42,6 +42,7 @@ const CLINICIAN_EMAILS = {
   'Ann Bredin': 'ann@balancedlivingtherapy.com',
   'Josephine Edmondson': 'josephine@balancedlivingtherapy.com',
   'Yusuf Rahmani': 'yusuf@balancedlivingtherapy.com',
+  'Joshua Forman': 'joshua@balancedlivingtherapy.com',
   'Jesse Dunn': 'jesse@balancedlivingtherapy.com',
 };
 
