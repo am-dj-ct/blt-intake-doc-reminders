@@ -53,7 +53,7 @@ test("a login-stage timeout writes a distinct red status artifact", () => {
       timeoutMs: 75_000,
     });
     const wrapped = new AggregateError([timeout], "synthetic cleanup wrapper", { cause: timeout });
-    assert.equal(reportTnSessionFailure(wrapped, file, {}), true);
+    assert.equal(reportTnSessionFailure(wrapped, file), true);
     const written = JSON.parse(fs.readFileSync(file, "utf8"));
     assert.equal(written.health, "red");
     assert.equal(written.alertCode, "tn_login_timeout");

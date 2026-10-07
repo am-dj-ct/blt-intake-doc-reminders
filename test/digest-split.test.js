@@ -1,37 +1,40 @@
-// The daily digest is split: PHI detail goes to a local report file, the
-// email is a no-PHI status to the sentinel mailbox. These tests pin the
-// safety property — no client data in the status mail — using synthetic data.
+// The daily digest report stays local: PHI detail goes to a report file inside
+// the protected boundary and is never emailed. The no-PHI daily status email to
+// the sentinel@ mailbox was removed 2026-10-07 (nobody read it; the job's one
+// watcher emails jesse@ on failure). Synthetic data only.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const templates = require('../lib/templates');
+const config = require('../config');
 const { writeReportAtomically } = require('../index');
-const { DIGEST_TO } = require('../config');
+
+const ROOT = path.join(__dirname, '..');
 
 const FAKE = [
   { time: '9:00 AM', client: 'Test Clientname', clinician: 'Fake Clinician', hasSOD: true, hasGAINSS: false },
   { time: '1:00 PM', client: 'Another Fakeperson', clinician: 'Fake Clinician', hasSOD: false, hasGAINSS: false },
 ];
 
-test('status mail carries counts only — no client names, times, or clinicians', () => {
-  const { subject, html } = templates.digestStatus({
-    ranAt: 'Mon, Aug 17, 8:35 AM', dateLabel: 'Monday, Aug 17',
-    total: 2, docsComplete: 0, missingSOD: 1, missingGAINSS: 2,
-    scrapeHealth: 'ok', reportPath: '/tmp/x/2026-08-17.html',
-  });
-  const all = subject + html;
-  for (const bad of ['Test Clientname', 'Another Fakeperson', 'Fake Clinician', '9:00', '1:00']) {
-    assert.ok(!all.includes(bad), `status mail must not contain ${bad}`);
+test('the daily status email is gone: no template, no recipient, no sentinel@ address in code', () => {
+  assert.strictEqual(templates.digestStatus, undefined);
+  assert.strictEqual(config.DIGEST_TO, undefined);
+  for (const rel of ['index.js', 'config.js', 'lib/templates.js', 'lib/send.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.ok(!/sentinel@/i.test(src.replace(/^\s*\/\/.*$/gm, '')), `${rel} must not address sentinel@ in code`);
   }
-  assert.match(html, /intakes_today=2/);
-  assert.match(html, /missing_sod=1/);
-  assert.match(html, /missing_gainss=2/);
 });
 
-test('the digest recipient is the sentinel mailbox, not a human inbox', () => {
-  assert.strictEqual(DIGEST_TO, 'sentinel@balancedlivingtherapy.com');
+test('the digest block in main() writes the local report and sends no mail', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  const start = src.indexOf('// Daily digest');
+  const end = src.indexOf('runStatus = {', start);
+  assert.ok(start > 0 && end > start, 'digest block found');
+  const block = src.slice(start, end);
+  assert.ok(!/sendEmail|send\(/.test(block), 'digest block must not send mail');
+  assert.match(block, /writeReportAtomically\(reportPath, reportHtml\)/);
 });
 
 test('the PHI detail lives in the local report, written via temp+rename', () => {
