@@ -13,15 +13,13 @@ const ESCALATION_CC = ['jesse@balancedlivingtherapy.com']; // CC'd on the 3h "st
 // jesse@ is CC'd on every email (nag, escalation, confirm) for oversight.
 const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
 
-// Daily digest / heartbeat: once a day, on the first hourly run at or after
-// this local hour, send a NO-PHI status mail (counts and doc-status tallies
-// only) to the machine-read sentinel mailbox. Confirms the system is alive.
-// The PHI detail (client names, times, per-client doc status) is never
-// emailed; it is written to a local report file under data/digests/ inside
-// the protected boundary, and the status mail points at it by path only.
-// (Jesse ruling 2026-08-17: automated mail to a human inbox is a defect.)
+// Daily digest: once a day, on the first hourly run at or after this local
+// hour, write the PHI detail (client names, times, per-client doc status) to a
+// local report file under data/digests/ inside the protected boundary. It is
+// never emailed. The daily status email that used to go to the sentinel@
+// mailbox was removed 2026-10-07 (Jesse): nobody read it, and the job's one
+// watcher (scripts/watch-intake-doc.sh) emails jesse@ when runs fail.
 const DIGEST_HOUR = 8;
-const DIGEST_TO = 'sentinel@balancedlivingtherapy.com';
 
 // Clinician display name (exactly as it appears in the TN schedule grid header)
 // -> work email. Copied from therapy-hours/config.js. Used to address the
@@ -93,5 +91,4 @@ module.exports = {
   ESCALATION_HOURS,
   ZERO_INTAKE_ALERT_RUNS,
   DIGEST_HOUR,
-  DIGEST_TO,
 };

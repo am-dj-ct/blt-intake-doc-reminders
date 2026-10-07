@@ -102,9 +102,9 @@ Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCa
 | Outcome | Check-in |
 | --- | --- |
 | healthy job exited 0 | green `ok` |
-| 3 completed runs in a row find video candidates but classify zero intakes | red `job_failed` (pages; status artifact records the streak) |
+| 3 completed runs in a row find video candidates but classify zero intakes | status artifact records the streak; no check-in (exit 0) |
 | Chrome launch, TN login, identity read, or login-marker release exceeds its stage deadline | red `job_failed` (pages; status artifact records `tn_browser_launch_timeout`, `tn_login_timeout`, `tn_identity_timeout`, or `tn_login_marker_timeout`) |
-| job exited 0 but a day failed to load / clinician view still filtered | yellow `degraded` (digest only) |
+| job exited 0 but a day failed to load / clinician view still filtered | status artifact `scrapeHealth: degraded`; no check-in (exit 0) |
 | job exited non-zero: 30-minute wall-clock timeout, pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
 | no check-in by slot + grace | the sentinel's own missed-slot detection (pages) |
 
@@ -114,6 +114,17 @@ outside the slot's acceptance window (see `scripts/sentinel-v5/checkin-lib.sh`).
 Producer-side failures are appended to
 `~/.blt-sentinel/logs/blt-intake-doc-reminders-fallback.log`. If the schedule
 in the plist changes, change the fragment row's cron to match.
+
+### Daily status email removed (2026-10-07)
+
+The job no longer sends the daily "[idr] daily status" email (it went to the
+unread `sentinel@` mailbox). The once-a-day local digest report
+(`data/digests/<date>.html`, PHI, never emailed) and the run status artifact
+(`data/status/latest.json`) are still written. The job's one watcher is
+`scripts/watch-intake-doc.sh` (`com.jesse.intake-doc-reminders-watch`, 21:00
+daily): it emails jesse@ only when 3 or more hourly runs fail. `index.js` no
+longer writes the health side-channel file `run.sh` used for yellow/red
+check-ins on exit-0 runs.
 
 ## Files
 
