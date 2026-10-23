@@ -122,7 +122,10 @@ unread `sentinel@` mailbox). The once-a-day local digest report
 (`data/digests/<date>.html`, PHI, never emailed) and the run status artifact
 (`data/status/latest.json`) are still written. The job's one watcher is
 `scripts/watch-intake-doc.sh` (`com.jesse.intake-doc-reminders-watch`, 21:00
-daily): it emails jesse@ only when 3 or more hourly runs fail. `index.js` no
+daily): it emails jesse@ only when no hourly run finished cleanly, or when 3 or
+more hourly runs failed, timed out, or never ran. A skip because the shared
+TherapyNotes login was busy counts only when the last clean run before it saw
+an intake still missing documents (since 2026-10-22). `index.js` no
 longer writes the health side-channel file `run.sh` used for yellow/red
 check-ins on exit-0 runs.
 
