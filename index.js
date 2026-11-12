@@ -3,9 +3,13 @@
 //
 // Each run:
 //   1. Scrape today + tomorrow's schedule (all clinicians).
-//   2. Keep scheduled VIDEO appointments in the next WINDOW_HOURS.
+//   2. Keep every scheduled appointment in the next WINDOW_HOURS, whatever
+//      the grid bubble says about its format. The bubble's "Virtual"/"Video"
+//      wording is not reliable: on 2026-11-10 a telehealth intake carried no
+//      such word, was never opened, and no reminder went out.
 //   3. Classify each (popup: CPT 90791 + Telehealth checkbox + patient id),
-//      cached so repeat runs don't re-open popups.
+//      cached so repeat runs don't re-open popups. The popup's Telehealth
+//      checkbox is the only modality signal that decides anything.
 //   4. For each virtual intake, read the chart's Documents and ask Azure OpenAI
 //      whether the SOD and GAINSS are present.
 //   5. State machine, one email max per (patient+appt+stage) via the ledger:
@@ -373,8 +377,35 @@ function readRunStatus(statusPath = STATUS_PATH) {
   catch (e) { if (e.code === 'ENOENT' || e instanceof SyntaxError) return null; throw e; }
 }
 
-function classificationSignal({ candidateCount, virtualIntakeCount }, previousStatus = null, threshold = ZERO_INTAKE_ALERT_RUNS) {
-  const zeroIntakeRun = candidateCount > 0 && virtualIntakeCount === 0;
+// Which scheduled appointments get their popup opened this run: every
+// not-cancelled appointment that starts inside the window. Deliberately NOT
+// filtered on the grid bubble's modality: that label comes from whatever words
+// TN happens to render on the bubble ("Virtual", "Video", "Teams"), and a
+// telehealth intake whose bubble carried none of them (a 2026-11-10 4 PM
+// intake) was skipped before its popup was ever read. The popup's
+// Telehealth checkbox is the real signal; see intakeVerdict().
+function selectCandidates(grid, ymd, now, windowEnd) {
+  return grid
+    .map(a => ({ ...a, date: ymd, start: tn.parseApptStart(ymd, a.time) }))
+    .filter(a => a.start && a.status === 'scheduled' && a.start > now && a.start <= windowEnd);
+}
+
+// 'virtual'   -> intake with the Telehealth box checked: remind.
+// 'in_person' -> intake without it: skipped by design (forms are collected at
+//                the visit), but counted so a quiet streak can tell "no intakes
+//                at all" from "intakes exist, none telehealth".
+// null        -> not an intake, or the popup could not be read.
+function intakeVerdict(cls) {
+  if (!cls || !cls.isIntake || !cls.patientId) return null;
+  return cls.isTelehealth ? 'virtual' : 'in_person';
+}
+
+// The streak counts runs that had appointments to classify but found no intake
+// of ANY format. Keyed on all intakes, not telehealth ones: most BLT intakes
+// are in person (13 of 17 in the 30 days before 2026-11-12), so a
+// telehealth-only denominator was red on every ordinary day and meant nothing.
+function classificationSignal({ candidateCount, intakeCount }, previousStatus = null, threshold = ZERO_INTAKE_ALERT_RUNS) {
+  const zeroIntakeRun = candidateCount > 0 && intakeCount === 0;
   const previousStreak = Number.isInteger(previousStatus?.zeroIntakeCandidateStreak)
     ? previousStatus.zeroIntakeCandidateStreak
     : 0;
@@ -383,7 +414,7 @@ function classificationSignal({ candidateCount, virtualIntakeCount }, previousSt
   return {
     zeroIntakeCandidateStreak,
     health: red ? 'red' : 'ok',
-    alertCode: red ? 'video_candidates_zero_intakes_streak' : null,
+    alertCode: red ? 'candidates_zero_intakes_streak' : null,
   };
 }
 
@@ -461,9 +492,11 @@ async function main() {
   // the day is empty, just proof they're outside the nag/escalation window.
   const gridByDay = {};
   let totalCandidateCount = 0;
+  let inPersonIntakeCount = 0;
   let runStatus = null;
   try {
-    // Phase A: per day, scrape grid, classify in-window video candidates (popup, cached).
+    // Phase A: per day, scrape grid, classify every in-window scheduled
+    // appointment through its popup (cached).
     for (const d of dates) {
       const dayLoad = await tn.gotoDay(page, d);
       const grid = await tn.scrapeDayGrid(page);
@@ -476,10 +509,8 @@ async function main() {
       gridByDay[d] = { grid, ok: dayOk && coverageOk };
       if (!dayOk) console.log(`${d}: day load failed (${dayLoad.error && dayLoad.error.message || 'unknown error'}) — digest gate will treat this day as unprovable`);
       else if (!coverageOk) console.log(`${d}: clinician view may still be filtered (coverage check failed) — digest gate will treat this day as unprovable`);
-      const candidates = grid
-        .map(a => ({ ...a, date: d, start: tn.parseApptStart(d, a.time) }))
-        .filter(a => a.start && a.status === 'scheduled' && a.modality === 'video' && a.start > now && a.start <= windowEnd);
-      console.log(`${d}: ${grid.length} appts, ${candidates.length} in-window video candidate(s)`);
+      const candidates = selectCandidates(grid, d, now, windowEnd);
+      console.log(`${d}: ${grid.length} appts, ${candidates.length} in-window scheduled candidate(s)`);
       totalCandidateCount += candidates.length;
 
       for (const a of candidates) {
@@ -496,21 +527,24 @@ async function main() {
           cls = await tn.classifyAppointment(page, a.aria);
           if (cls) cache[key] = cls;
         }
-        if (cls && cls.isIntake && cls.isTelehealth && cls.patientId) {
+        const verdict = intakeVerdict(cls);
+        if (verdict === 'virtual') {
           intakes.push({ clinician: a.clinician, client: a.client, start: a.start, patientId: cls.patientId });
+        } else if (verdict === 'in_person') {
+          inPersonIntakeCount += 1;
         }
       }
     }
     saveCache(cache, now);
-    console.log(`\nVirtual intakes in window: ${intakes.length}`);
+    console.log(`\nVirtual intakes in window: ${intakes.length} (in-person intakes skipped: ${inPersonIntakeCount})`);
     const scrapeHealth = runHealthVerdict(gridByDay);
     const classification = classificationSignal({
       candidateCount: totalCandidateCount,
-      virtualIntakeCount: intakes.length,
+      intakeCount: intakes.length + inPersonIntakeCount,
     }, previousStatus);
     const health = classification.health === 'red' ? 'red' : scrapeHealth === 'degraded' ? 'yellow' : 'green';
     if (classification.health === 'red') {
-      console.error(`[health] red: ${totalCandidateCount} video candidate(s), zero intakes, ${classification.zeroIntakeCandidateStreak} consecutive run(s)`);
+      console.error(`[health] red: ${totalCandidateCount} scheduled candidate(s), zero intakes of any format, ${classification.zeroIntakeCandidateStreak} consecutive run(s)`);
     }
 
     // Phase B: per intake, read documents, classify, run the state machine.
@@ -586,6 +620,8 @@ async function main() {
       apptCounts: Object.fromEntries(Object.entries(gridByDay).map(([ymd, day]) => [ymd, (day && day.grid ? day.grid.length : null)])),
       candidateCount: totalCandidateCount,
       virtualIntakeCount: intakes.length,
+      inPersonIntakeCount,
+      intakeCount: intakes.length + inPersonIntakeCount,
       pendingCount,
       sentCount: sent.size - sentAtPhaseBStart,
       scrapeHealth,
@@ -600,7 +636,7 @@ async function main() {
   console.log('\nDone.');
 }
 
-module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportTnSessionFailure, readRunStatus, classificationSignal, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportTnSessionFailure, readRunStatus, classificationSignal, selectCandidates, intakeVerdict, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

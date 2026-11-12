@@ -9,7 +9,7 @@ In-person intakes are skipped — those forms get collected at the visit.
 Runs hourly (7am–8pm) on the Mac. Each run:
 
 1. **Scrape schedule** — logs into TherapyNotes (Playwright + system Chrome), reads today + tomorrow's day view across all clinicians.
-2. **Find virtual intakes** — keeps scheduled *video* appointments in the next 30h, opens each appointment's editor popup and keeps the ones that are **CPT 90791 / "Therapy Intake"** *and* have the **Telehealth** box checked. Classifications are cached (`data/appts.json`) so repeat runs don't re-open popups.
+2. **Find virtual intakes** — takes every scheduled appointment in the next 30h, opens each appointment's editor popup and keeps the ones that are **CPT 90791 / "Therapy Intake"** *and* have the **Telehealth** box checked. The grid bubble's own wording ("Virtual", "Video") is never used to decide: until 2026-11-12 it was a pre-filter, and a telehealth intake whose bubble carried none of those words was never opened and never reminded. Classifications are cached (`data/appts.json`) so repeat runs don't re-open popups.
 3. **Check the chart** — opens each intake patient's **Documents** tab, reads the document list, and asks **Azure OpenAI** (BAA-covered) whether a SOD and a GAINSS are present. The LLM handles naming variation, typos, and clinician-name prefixes (e.g. a SOD titled "Thomas Matsyik SOD").
 4. **Act** (one email max per appointment + stage, tracked in `data/sent.json`):
    - **nag** — docs missing, >3h before start → email **frontdesk@**
