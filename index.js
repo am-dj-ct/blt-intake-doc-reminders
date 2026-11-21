@@ -279,6 +279,8 @@ function migrateLegacyLedgerKeys(sent, cache, ledgerLib = ledger) {
   return migrated;
 }
 
+const { recordDirectorEvent } = require('./lib/director-rollup');
+
 async function dispatch(stage, it, now, sent, opts, deps = {}) {
   const send = deps.sendEmail || sendEmail;
   const ledgerLib = deps.ledger || ledger;
@@ -310,8 +312,16 @@ async function dispatch(stage, it, now, sent, opts, deps = {}) {
     }
   }
 
-  // jesse@ on every email; dedupe and never cc the primary recipient.
-  cc = [...new Set([...cc, ...ALWAYS_CC])].filter(a => a !== to);
+  // Actual escalations remain immediate; routine director oversight joins the
+  // existing weekly digest only after a durable count-only local handoff.
+  let rollupError;
+  const routineOversight = stage !== 'escalation' && to !== SENDER;
+  if (routineOversight && !opts.dryRun && !opts.test) {
+    try { (deps.recordDirectorEvent || recordDirectorEvent)({ key: k, stage, now }); }
+    catch (e) { rollupError = e; }
+  }
+  const directorCc = stage === 'escalation' || rollupError ? [SENDER] : [];
+  cc = [...new Set([...cc, ...ALWAYS_CC, ...directorCc])].filter(a => a !== to);
 
   let { subject } = msg;
   if (opts.test) { to = SENDER; cc = []; subject = `[TEST] ${subject}`; }
@@ -323,6 +333,7 @@ async function dispatch(stage, it, now, sent, opts, deps = {}) {
   await send({ to, cc, subject, html: msg.html });
   saveSentKey(sent, k, opts, ledgerLib);
   console.log(`          sent.`);
+  if (rollupError) throw new Error('Intake weekly handoff failed; original director copy retained', { cause: rollupError });
   return 'sent';
 }
 

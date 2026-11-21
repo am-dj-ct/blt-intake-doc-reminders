@@ -40,6 +40,7 @@ test("a clinician-column relabel between runs must not resend the same client's 
   };
   let sent = realLedger.load(ledgerPath);
   const outcome1 = await dispatch("nag", intakeUnderClinicianA, new Date("2099-09-28T14:35:00.000Z"), sent, opts, {
+    recordDirectorEvent: () => {},
     sendEmail: async (msg) => sends.push(msg),
     ledger: makeLedgerDeps(ledgerPath),
   });
@@ -50,6 +51,7 @@ test("a clinician-column relabel between runs must not resend the same client's 
   // reloaded from disk, same clinician label still cached -> correctly skip.
   sent = realLedger.load(ledgerPath);
   const outcomeSkip = await dispatch("nag", intakeUnderClinicianA, new Date("2099-09-28T15:35:00.000Z"), sent, opts, {
+    recordDirectorEvent: () => {},
     sendEmail: async (msg) => sends.push(msg),
     ledger: makeLedgerDeps(ledgerPath),
   });
@@ -72,6 +74,7 @@ test("a clinician-column relabel between runs must not resend the same client's 
   };
   sent = realLedger.load(ledgerPath);
   const outcome2 = await dispatch("nag", intakeUnderClinicianB, new Date("2099-09-28T20:35:00.000Z"), sent, opts, {
+    recordDirectorEvent: () => {},
     sendEmail: async (msg) => sends.push(msg),
     ledger: makeLedgerDeps(ledgerPath),
   });
@@ -122,6 +125,7 @@ test("legacy patient-id-keyed ledger entries migrate forward without resending",
     start,
     missing: ["SOD"],
   }, new Date("2099-09-29T03:35:00.000Z"), sent, { dryRun: false, test: false, force: false }, {
+    recordDirectorEvent: () => {},
     sendEmail: async (msg) => sends.push(msg),
     ledger: { key: realLedger.key, save: (s) => realLedger.save(s, ledgerPath) },
   });
