@@ -9,6 +9,67 @@ const { spawnSync, execFileSync } = require("node:child_process");
 const { runBoundedCleanup, installBoundedProfileCleanup } = require("../lib/bounded-profile-cleanup");
 const { securePathTree } = require("../lib/tn-account-session");
 
+test("actual CLI lifecycle writes ok status and exits despite abandoned browser transport", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-cli-teardown-"));
+  const repo = path.join(__dirname, "..");
+  fs.mkdirSync(path.join(dir, "lib"));
+  for (const file of ["index.js", "config.js", "lib/tn-account-session.js", "lib/finish-run.js"]) {
+    fs.copyFileSync(path.join(repo, file), path.join(dir, file));
+  }
+  const lock = path.join(dir, "lock");
+  fs.writeFileSync(lock, "synthetic owner");
+  // Stub every network boundary before loading the isolated CLI. All data
+  // paths and the synthetic lock are in this temporary directory.
+  const preload = `
+    const Module = require('node:module'), fs = require('node:fs'), path = require('node:path');
+    const original = Module._load, root = __dirname;
+    const realSession = require('./lib/tn-account-session');
+    const profile = path.join(root, 'account', 'browser-profile');
+    realSession.securePathTree(profile, { lockOwnershipVerified: true });
+    const lockSession = { ok: true, verifyStillOwner: () => ({ ok: true }),
+      release: async () => { fs.unlinkSync(path.join(root, 'lock')); return { ok: true }; } };
+    const broker = { withPreWorkAccountFailover: async fn => fn(),
+      lock: { killProfileDirAndConfirm: async () => ({ confirmed: true, stillAlive: [] }) } };
+    Module._load = function(request, parent, isMain) {
+      if (parent?.filename === path.join(root, 'index.js')) {
+        if (request === './lib/tn') return {
+          ymd: d => d.toISOString().slice(0,10),
+          launch: async () => { setInterval(() => {}, 1000); return { page: {},
+            context: { close: () => new Promise(() => {}) }, browser: { isConnected: () => false } }; },
+          gotoDay: async () => ({ ok: true, coverageOk: true }), scrapeDayGrid: async () => []
+        };
+        if (request === './lib/account-broker') return { loadBroker: () => broker };
+        if (request === './lib/tn-account-session') return { ...realSession,
+          isEnabled: () => true, resolveAccount: async () => ({ decision: { resolved: { account: 'blta' } } }),
+          profileDirFor: () => profile, acquireSession: async () => lockSession, ensureLoginAndIdentity: async () => {},
+          cleanupAndRelease: options => realSession.cleanupAndRelease({ ...options, timeoutMs: 15 })
+        };
+        if (request === './lib/ledger') return { load: () => new Set() };
+        if (request === './lib/templates') return {};
+        if (request === './lib/classify') return { classifyDocs: () => { throw Error('network forbidden'); } };
+        if (request === './lib/send') return { sendEmail: () => { throw Error('mail forbidden'); } };
+      }
+      return original.call(this, request, parent, isMain);
+    };
+  `;
+  fs.writeFileSync(path.join(dir, "preload.js"), preload);
+  try {
+    const result = spawnSync(process.execPath, ["--require", path.join(dir, "preload.js"), path.join(dir, "index.js"),
+      "--dry-run", "--date", "2026-11-20", "--time", "07:35"], {
+      encoding: "utf8", timeout: 3000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.match(result.stdout, /\[work-complete\] status=ok/);
+    assert.match(result.stdout, /Done\. durationMs=\d+ lockReleased=true/);
+    assert.equal(fs.existsSync(lock), false);
+    const status = JSON.parse(fs.readFileSync(path.join(dir, "data", "status", "latest.json")));
+    assert.equal(status.outcome, "ok");
+    assert.equal(status.workCompleted, true);
+    assert.equal(status.lockReleased, true);
+    assert.equal(status.cleanupReason, "tn_teardown_recovered");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("hung browser closes and transport still exit after browser death and exact lock release", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-teardown-"));
   const profile = path.join(dir, "account", "browser-profile");
