@@ -150,3 +150,30 @@ check-ins on exit-0 runs.
 - Scrape → intake/telehealth detection → Documents read → Azure classify → nag/escalation decisions: **verified** against the live schedule (dry run).
 - **Email send is unverified** — no Graph client secret available yet to test `--test`.
 - The **confirm** path is wired but not observed live (no current intake has its docs in yet).
+
+### Bounded profile cleanup (2026-11-20)
+
+The intake job owns its runtime behavior; pay-period-tracker owns the canonical
+account broker. The live checkout is updated only by BLT Hub's registered
+sibling release controller (`docs/sibling-release-autodeploy.md` in blt-hub),
+which applies the reviewed main commit and calls this repo's transactional
+installer. Do not pull or edit that deployment checkout by hand.
+
+Both prelaunch preparation and post-browser profile cleanup run in a separate
+process with a 60-second SIGKILL deadline. That helper verifies the parent job's
+exact account ownership and confirms no browser uses the selected profile.
+It deletes only `Default/Cache`, Chrome's disposable HTTP cache, while retaining
+cookies and other login state. Chrome also has a 10 MiB disk-cache target.
+The unchanged, pinned broker's envelope verification/resealing runs in the same
+bounded helper; the canonical release closure still shuts down its own timers
+and releases only the original lock. A failed helper leaves the lock held and
+records `tn_profile_cleanup_timeout` or `tn_profile_cleanup_failed`; no unsafe
+release or account failover is authorized by a timeout.
+
+After completed reminder work the log records `[work-complete] status=ok`.
+Recovered graceful-close trouble records `tn_teardown_recovered`, then an ok
+status and `Done.` with elapsed milliseconds and released-lock confirmation.
+The process explicitly exits after stdout flush so an abandoned Playwright
+transport cannot keep it alive after safe release. The existing daily watcher
+counts recovered teardown separately and alerts on unresolved teardown without
+calling already-completed reminder work a missed intake.

@@ -18,6 +18,19 @@ function runLog(outcomes) {
     // A clean run that saw an intake still missing documents (synthetic names).
     if (outcome === "pending") return `${head}Virtual intakes in window: 1\n\nTest Client — Test Clinician — Mon 9/28 4:00 PM (5.0h) | docs: missing SOD+GAINSS\n  [skip] nag — already sent for Test Client\n\nDone.\n`;
     if (outcome === "complete") return `${head}Virtual intakes in window: 1\n\nTest Client — Test Clinician — Mon 9/28 4:00 PM (5.0h) | docs: all present\n  [skip] confirm — already sent for Test Client\n\nDone.\n`;
+    if (outcome.startsWith("work-")) {
+      const pending = outcome === "work-pending-timeout";
+      const work = pending ? "Synthetic intake | docs: missing SOD+GAINSS\n" : "Virtual intakes in window: 0\n";
+      const marker = "[work-complete] status=ok\n";
+      const endings = {
+        "work-recovered": "[cleanup] reason=tn_teardown_recovered close timed out; owned browser terminated\nDone.\n",
+        "work-timeout": "[timeout] run exceeded 1800s; terminating its process group\n",
+        "work-pending-timeout": "[timeout] run exceeded 1800s; terminating its process group\n",
+        "work-failed": "FAILED: cleanup synthetic failure\nDone.\n",
+        "work-unfinished": "",
+      };
+      return head + work + marker + endings[outcome];
+    }
     if (outcome === "busy") return `${head}\n[skip] TN account busy (skip-if-busy lock, reason=busy) — skipping\n\nDone.\n`;
     if (outcome === "timeout") return `${head}[timeout] run exceeded 1800s; terminating its process group\n`;
     return `${head}FAILED: synthetic failure\n`;
@@ -122,4 +135,43 @@ test("yesterday's clean runs do not count for today", () => {
   const r = watch(allOk(), "2026-09-29T21:00:00-07:00");
   assert.equal(r.status, 1);
   assert.match(r.stderr, /0 of 14 slots/);
+});
+
+test("recovered teardown counts completed work and stays informational", () => {
+  const r = watch(Object.fromEntries(Array.from({ length: 14 }, (_, i) => [i + 7, "work-recovered"])));
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /14 of 14 hourly runs clean today, 14 recovered TherapyNotes teardown\(s\)/);
+});
+
+test("completed work followed by timeout alerts teardown without claiming missed reminders", () => {
+  const r = watch(Object.fromEntries(Array.from({ length: 14 }, (_, i) => [i + 7, "work-timeout"])));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /14 hourly run\(s\) completed reminder work but TherapyNotes teardown failed or was not confirmed/);
+  assert.doesNotMatch(r.stderr, /no hourly run|hourly runs today failed/);
+  assert.match(r.stdout, /dry run, no email/);
+});
+
+test("missing Done or FAILED after completed work alerts teardown even once", () => {
+  for (const outcome of ["work-unfinished", "work-failed"]) {
+    const r = watch({ ...allOk(), 9: outcome });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /1 hourly run\(s\) completed reminder work but TherapyNotes teardown failed or was not confirmed/);
+    assert.doesNotMatch(r.stderr, /hourly runs today failed/);
+  }
+});
+
+test("completed work updates waiting state before teardown failure", () => {
+  const pending = watch({ ...allOk(), 9: "work-pending-timeout", 10: "busy", 11: "busy", 12: "busy" });
+  assert.equal(pending.status, 1);
+  assert.match(pending.stderr, /3 of 14 hourly runs today failed/);
+  assert.match(pending.stderr, /1 hourly run\(s\) completed reminder work but TherapyNotes teardown/);
+  const cleared = watch({ ...allOk(), 8: "pending", 9: "work-timeout", 10: "busy", 11: "busy", 12: "busy" });
+  assert.equal(cleared.status, 1);
+  assert.doesNotMatch(cleared.stderr, /hourly runs today failed/);
+  assert.match(cleared.stderr, /3 busy skip\(s\) with nothing waiting/);
+});
+
+test("yesterday's teardown problems do not alert today", () => {
+  const previous = runLog({ 20: "work-timeout" }).replaceAll("2026-09-29T", "2026-09-28T");
+  assert.equal(watch(allOk(), undefined, previous).status, 0);
 });

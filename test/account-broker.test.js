@@ -32,6 +32,7 @@ function modules() {
     acquireAccountSession: async () => {},
     withPreWorkAccountFailover: async (fn) => fn({ attempt: 0 }),
     confirmPreWorkFailoverCleanup: () => {},
+    sessionEnvelope: { refreshSessionEnvelope: () => {}, ensureSessionEnvelope: () => {} },
     identityGate: { assertIdentity: () => ({ ok: true }) },
     lock: { killProfileDirAndConfirm: async () => ({ confirmed: true }) },
     doppler: { createDopplerReader: () => async () => "", createDopplerWriter: () => async () => {} },
