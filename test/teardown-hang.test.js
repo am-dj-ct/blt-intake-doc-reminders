@@ -13,7 +13,7 @@ test("actual CLI lifecycle writes ok status and exits despite abandoned browser 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idr-cli-teardown-"));
   const repo = path.join(__dirname, "..");
   fs.mkdirSync(path.join(dir, "lib"));
-  for (const file of ["index.js", "config.js", "lib/tn-account-session.js", "lib/profile-cache.js", "lib/finish-run.js"]) {
+  for (const file of ["index.js", "config.js", "lib/tn-account-session.js", "lib/profile-cache.js", "lib/finish-run.js", "lib/director-rollup.js"]) {
     fs.copyFileSync(path.join(repo, file), path.join(dir, file));
   }
   const lock = path.join(dir, "lock");

@@ -333,7 +333,12 @@ async function dispatch(stage, it, now, sent, opts, deps = {}) {
   await send({ to, cc, subject, html: msg.html });
   saveSentKey(sent, k, opts, ledgerLib);
   console.log(`          sent.`);
-  if (rollupError) throw new Error('Intake weekly handoff failed; original director copy retained', { cause: rollupError });
+  if (rollupError) {
+    const error = new Error('Intake weekly handoff failed; original director copy retained', { cause: rollupError });
+    // The optional director handoff must not abort later staff notices.
+    if (deps.onRollupFailure) deps.onRollupFailure(error);
+    else throw error;
+  }
   return 'sent';
 }
 
@@ -506,6 +511,8 @@ async function main() {
   let totalCandidateCount = 0;
   let inPersonIntakeCount = 0;
   let runStatus = null;
+  const rollupErrors = [];
+  const dispatchDeps = { onRollupFailure: error => rollupErrors.push(error) };
   try {
     // Phase A: per day, scrape grid, classify every in-window scheduled
     // appointment through its popup (cached).
@@ -584,11 +591,11 @@ async function main() {
 
       let outcome;
       if (decision.stage === 'confirm') {
-        outcome = await dispatch('confirm', it, decision.now, sent, opts);
+        outcome = await dispatch('confirm', it, decision.now, sent, opts, dispatchDeps);
       } else if (decision.stage === 'escalation') {
-        outcome = await dispatch('escalation', { ...it, missing }, decision.now, sent, opts);
+        outcome = await dispatch('escalation', { ...it, missing }, decision.now, sent, opts, dispatchDeps);
       } else {
-        outcome = await dispatch('nag', { ...it, missing }, decision.now, sent, opts);
+        outcome = await dispatch('nag', { ...it, missing }, decision.now, sent, opts, dispatchDeps);
       }
       if (outcome !== 'already-sent') pendingCount += 1;
     }
@@ -637,17 +644,18 @@ async function main() {
       pendingCount,
       sentCount: sent.size - sentAtPhaseBStart,
       scrapeHealth,
-      health,
-      alertCode: classification.alertCode,
+      health: rollupErrors.length ? 'red' : health,
+      alertCode: rollupErrors.length ? 'weekly_director_handoff_failed' : classification.alertCode,
+      directorHandoffFailureCount: rollupErrors.length,
       zeroIntakeCandidateStreak: classification.zeroIntakeCandidateStreak,
       workCompleted: true,
     };
     writeRunStatus({ ...runStatus, phase: 'cleanup' });
-    console.log('[work-complete] status=ok');
+    console.log(`[work-complete] status=${rollupErrors.length ? 'error' : 'ok'}`);
   } finally {
     try {
       const released = await session.release();
-      if (runStatus) writeRunStatus({ ...runStatus, phase: 'finished', outcome: 'ok', lockReleased: true,
+      if (runStatus) writeRunStatus({ ...runStatus, phase: 'finished', outcome: rollupErrors.length ? 'failed' : 'ok', lockReleased: true,
         durationMs: Date.now() - startedAt,
         cleanupReason: released?.cleanupWarning ? 'tn_teardown_recovered' : null,
         cleanupWarning: Boolean(released?.cleanupWarning) });
@@ -659,6 +667,7 @@ async function main() {
       throw error;
     }
   }
+  if (rollupErrors.length) throw new AggregateError(rollupErrors, 'Intake weekly handoff failed; all staff notices and reports completed');
   console.log(`\nDone. durationMs=${Date.now() - startedAt} lockReleased=true`);
 }
 
