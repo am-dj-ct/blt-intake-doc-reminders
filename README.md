@@ -19,6 +19,7 @@ Runs hourly (7am–8pm) on the Mac. Each run:
 ## HIPAA / BAA
 
 - The only network calls are to **TherapyNotes**, **Microsoft Graph** (email), and **Azure OpenAI** — all inside BLT's BAA coverage. No PHI goes to any non-BAA service.
+- Routine director-only copies of nags and confirmations are folded into Jesse's existing Saturday Weekly Hours overview. Before omitting that CC, dispatch durably records a count-only immutable event under `~/.blt-hub/reports/weekly-director/intake` (`BLT_WEEKLY_DIRECTOR_ROOT` override). A failed local handoff retains the original Jesse CC and makes the existing job fail loudly after recording staff delivery. Urgent escalation CCs and Jesse's own treating-clinician confirmations remain immediate. No client identity is stored in the event payload; test/dry runs never write events.
 - Email is sent from **jesse@balancedlivingtherapy.com** via Graph; all recipients are inside the `@balancedlivingtherapy.com` tenant, so client names in the body stay in-tenant.
 - Inference (the doc-presence judgment) uses **Azure OpenAI** under BLT's tenant, never a third-party model.
 

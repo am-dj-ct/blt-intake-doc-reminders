@@ -25,6 +25,7 @@ test("confirmation falls back to front desk when the therapist has no email", as
     test: false,
     force: false,
   }, {
+    recordDirectorEvent: () => {},
     sendEmail: async message => messages.push(message),
     ledger: fakeLedger,
   });

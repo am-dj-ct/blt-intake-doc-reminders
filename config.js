@@ -10,8 +10,9 @@
 const SENDER = 'jesse@balancedlivingtherapy.com';
 const FRONTDESK = 'frontdesk@balancedlivingtherapy.com'; // Armaan / front desk
 const ESCALATION_CC = ['jesse@balancedlivingtherapy.com']; // CC'd on the 3h "still missing" escalation
-// jesse@ is CC'd on every email (nag, escalation, confirm) for oversight.
-const ALWAYS_CC = ['jesse@balancedlivingtherapy.com'];
+// Routine oversight is count-only in the existing Weekly Hours digest.
+// Actual escalations and Jesse's own clinician confirmations stay immediate.
+const ALWAYS_CC = [];
 
 // Daily digest: once a day, on the first hourly run at or after this local
 // hour, write the PHI detail (client names, times, per-client doc status) to a
