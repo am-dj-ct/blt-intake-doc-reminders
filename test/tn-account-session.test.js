@@ -307,7 +307,7 @@ test("cleanup confirms context death before releasing the exact lock", async () 
   session.securePathTree(profileDir, { lockOwnershipVerified: true });
   const result = await session.cleanupAndRelease({ launched, profileDir, lockSession, broker, timeoutMs: 20 });
   assert.equal(result.confirmed, true);
-  assert.deepEqual(events, ["context-close", "death-proof", "owner-check", "release"]);
+  assert.deepEqual(events, ["context-close", "owner-check", "death-proof", "owner-check", "release"]);
 });
 
 test("cleanup gives authoritative browser-death proof its longer production budget", async () => {

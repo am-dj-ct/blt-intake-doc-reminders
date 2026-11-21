@@ -140,7 +140,7 @@ async function openTnSession(opts = {}, deps = {}) {
             // context/browser close that timed out is cosmetic, so warn and let
             // the run finish cleanly instead of exiting non-zero over teardown
             // that actually succeeded.
-            if (cleanup.safeToClose) { console.warn(`[cleanup] graceful browser close was imperfect but teardown is confirmed: ${cleanup.error?.message}`); return { cleanupWarning: true }; }
+            if (cleanup.safeToClose) { console.warn("[cleanup] reason=tn_teardown_recovered graceful close was slow; browser death and lock release confirmed"); return { cleanupWarning: true }; }
             throw cleanup.error;
           }
           return { cleanupWarning: false };
@@ -453,6 +453,7 @@ function reportTnSessionFailure(error, statusPath = STATUS_PATH) {
 }
 
 async function main() {
+  const startedAt = Date.now();
   const opts = parseArgs();
   const now = opts.date ? new Date(`${opts.date}T${opts.time || '09:00'}:00`) : new Date();
   const windowEnd = new Date(now.getTime() + WINDOW_HOURS * HOUR);
@@ -628,12 +629,26 @@ async function main() {
       health,
       alertCode: classification.alertCode,
       zeroIntakeCandidateStreak: classification.zeroIntakeCandidateStreak,
+      workCompleted: true,
     };
+    writeRunStatus({ ...runStatus, phase: 'cleanup' });
+    console.log('[work-complete] status=ok');
   } finally {
-    const released = await session.release();
-    if (runStatus) writeRunStatus({ ...runStatus, cleanupWarning: Boolean(released && released.cleanupWarning) });
+    try {
+      const released = await session.release();
+      if (runStatus) writeRunStatus({ ...runStatus, phase: 'finished', outcome: 'ok', lockReleased: true,
+        durationMs: Date.now() - startedAt,
+        cleanupReason: released?.cleanupWarning ? 'tn_teardown_recovered' : null,
+        cleanupWarning: Boolean(released?.cleanupWarning) });
+    } catch (error) {
+      const alert = findSessionAlert(error);
+      writeRunStatus({ ...runStatus, health: 'red', phase: 'cleanup_failed', outcome: 'failed',
+        workCompleted: Boolean(runStatus), lockReleased: false,
+        alertCode: alert?.alertCode || 'tn_teardown_failed', durationMs: Date.now() - startedAt });
+      throw error;
+    }
   }
-  console.log('\nDone.');
+  console.log(`\nDone. durationMs=${Date.now() - startedAt} lockReleased=true`);
 }
 
 module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportTnSessionFailure, readRunStatus, classificationSignal, selectCandidates, intakeVerdict, writeReportAtomically, writeRunStatus };
@@ -654,5 +669,11 @@ function printErrorTree(err, seen = new Set(), depth = 0) {
 }
 
 if (require.main === module) {
-  main().catch(err => { console.error('FAILED:', err.message); printErrorTree(err); process.exit(1); });
+  main().then(() => {
+    // A timed-out Playwright close can leave driver handles open even after
+    // the browser died and the canonical lock released. Work and status have
+    // finished; flush the Done line and end our process rather than waiting
+    // on that abandoned transport until the 30-minute supervisor fires.
+    require('./lib/finish-run').finishSuccessfulRun();
+  }).catch(err => { console.error('FAILED:', err.message); printErrorTree(err); process.exit(1); });
 }
