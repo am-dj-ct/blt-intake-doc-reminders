@@ -162,13 +162,26 @@ installer. Do not pull or edit that deployment checkout by hand.
 Both prelaunch preparation and post-browser profile cleanup run in a separate
 process with a 60-second SIGKILL deadline. That helper verifies the parent job's
 exact account ownership and confirms no browser uses the selected profile.
-It deletes only `Default/Cache`, Chrome's disposable HTTP cache, while retaining
-cookies and other login state. Chrome also has a 10 MiB disk-cache target.
+It atomically moves `Default/Cache` and `Default/Code Cache`, Chrome's
+disposable HTTP and compiled-code caches, into a private sibling directory
+outside the active profile, while retaining cookies and other login state.
+Preparation never recursively deletes those caches: a large but healthy cache
+must not consume the preparation deadline and prevent reminder work. Chrome
+also has a 10 MiB disk-cache target.
 The unchanged, pinned broker's envelope verification/resealing runs in the same
 bounded helper; the canonical release closure still shuts down its own timers
-and releases only the original lock. A failed helper leaves the lock held and
-records `tn_profile_cleanup_timeout` or `tn_profile_cleanup_failed`; no unsafe
-release or account failover is authorized by a timeout.
+and releases only the original lock. A failed security/reseal helper records
+`tn_profile_cleanup_timeout` or `tn_profile_cleanup_failed`; no unsafe release
+or account failover is authorized by a timeout. The canonical broker releases
+its exact lock on setup failure. A security/reseal failure during teardown
+still refuses release.
+
+Only after browser death and canonical lock release are confirmed, a separate
+bounded helper recursively deletes the retired caches. Its 60-second deadline
+still kills a stuck deletion, but that cannot retain the TN login or prevent
+completed reminders from finishing. Unfinished deletion logs the fixed warning
+`tn_cache_gc_deferred lockReleased=true` and is retried after the next successful
+run. No new job or watcher is installed.
 
 After completed reminder work the log records `[work-complete] status=ok`.
 Recovered graceful-close trouble records `tn_teardown_recovered`, then an ok
