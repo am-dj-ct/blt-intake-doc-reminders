@@ -6,9 +6,10 @@ const { resolveBrokerRoot } = require("../lib/account-broker");
 const { JOB_NAME, NORMAL_ACCOUNTS, profileDirFor, securePathTree, prepareProfileForLaunch } = require("../lib/tn-account-session");
 
 function cleanupProfile(operation, payload, { broker, parentPid = process.ppid } = {}) {
-  if (!["secure", "seal", "ensure", "prepare"].includes(operation)) throw new Error("Invalid cleanup operation.");
+  if (!["secure", "seal", "ensure", "prepare", "purge"].includes(operation)) throw new Error("Invalid cleanup operation.");
   const account = payload.account || NORMAL_ACCOUNTS.find((name) => profileDirFor(name) === payload.profileDir);
   if (!NORMAL_ACCOUNTS.includes(account) || payload.profileDir !== profileDirFor(account)) throw new Error("Invalid cleanup profile.");
+  if (operation === "purge") return require("../lib/profile-cache").purgeRetiredCaches(payload.profileDir);
   const lockDir = broker.lock.lockDirFor(account);
   const owner = broker.lock.readOwner(lockDir);
   if (!owner || owner.pid !== parentPid || owner.jobName !== JOB_NAME || owner.browserProfileDir !== payload.profileDir ||
