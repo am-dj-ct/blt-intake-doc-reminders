@@ -71,11 +71,11 @@ const WINDOW_HOURS = 30;
 // "Within 3 hours of the session" — escalation re-nag threshold.
 const ESCALATION_HOURS = 3;
 
-// Three consecutive completed runs with video candidates but zero classified
-// intakes is an operational anomaly. It may be a genuinely quiet stretch, but
-// it must be reviewed instead of remaining indistinguishable from a broken
-// popup classifier for weeks.
-const ZERO_INTAKE_ALERT_RUNS = 3;
+// Alert after six distinct service dates with candidates and no intake of any
+// format. Nov 12–22 all-format run history had a normal five-service-date gap
+// (Nov 13–17, including working weekend appointments); older video-only logs
+// cannot establish all-format gaps. Hourly repeats must not advance this count.
+const ZERO_INTAKE_ALERT_DAYS = 6;
 
 module.exports = {
   SENDER,
@@ -90,6 +90,6 @@ module.exports = {
   DOC_PATTERNS,
   WINDOW_HOURS,
   ESCALATION_HOURS,
-  ZERO_INTAKE_ALERT_RUNS,
+  ZERO_INTAKE_ALERT_DAYS,
   DIGEST_HOUR,
 };

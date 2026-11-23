@@ -32,13 +32,13 @@ function parseArgs(argv) {
 
 function writeTimeoutStatus(statusPath, timeoutSeconds, cleanupConfirmed = false) {
   const status = {
+    ...require("../lib/classification-state").readClassificationState(statusPath),
     ranAt: new Date().toISOString(),
     health: "red",
     alertCode: "run_timeout",
     timedOut: true,
     timeoutSeconds,
     cleanupConfirmed,
-    zeroIntakeCandidateStreak: 0,
   };
   fs.mkdirSync(path.dirname(statusPath), { recursive: true });
   const temporary = `${statusPath}.tmp-${process.pid}`;

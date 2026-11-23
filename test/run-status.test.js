@@ -63,3 +63,25 @@ test("a login-stage timeout writes a distinct red status artifact", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("login and timeout failures preserve day evidence without stale counts; intake reset replaces it", t => {
+  const { writeTimeoutStatus } = require('../scripts/run-with-timeout');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'idr-streak-preserve-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'latest.json');
+  writeRunStatus({ candidateCount: 10, zeroIntakeCandidateDays: ['2026-11-19', '2026-11-20'], zeroIntakeCandidateStreak: 2, zeroIntakeStreakUnit: 'service_days', zeroIntakeAlertDays: 6 }, file);
+  const error = Object.assign(new Error('synthetic timeout'), { alertCode: 'tn_login_timeout' });
+  reportTnSessionFailure(error, file);
+  let status = JSON.parse(fs.readFileSync(file));
+  assert.equal(status.zeroIntakeCandidateStreak, 2);
+  assert.deepEqual(status.zeroIntakeCandidateDays, ['2026-11-19', '2026-11-20']);
+  assert.equal(status.candidateCount, undefined);
+  writeTimeoutStatus(file, 1800);
+  status = JSON.parse(fs.readFileSync(file));
+  assert.equal(status.alertCode, 'run_timeout');
+  assert.equal(status.zeroIntakeCandidateStreak, 2);
+  assert.equal(status.zeroIntakeStreakUnit, 'service_days');
+  writeRunStatus({ zeroIntakeCandidateDays: [], zeroIntakeCandidateStreak: 0, zeroIntakeStreakUnit: 'service_days', zeroIntakeAlertDays: 6 }, file);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)).zeroIntakeCandidateDays, []);
+});
