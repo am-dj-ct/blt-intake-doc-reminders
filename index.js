@@ -37,7 +37,7 @@ const { loadBroker } = require('./lib/account-broker');
 const tnAccountSession = require('./lib/tn-account-session');
 const {
   SENDER, FRONTDESK, ALWAYS_CC, CLINICIAN_EMAILS,
-  WINDOW_HOURS, ESCALATION_HOURS, ZERO_INTAKE_ALERT_RUNS, DIGEST_HOUR,
+  WINDOW_HOURS, ESCALATION_HOURS, ZERO_INTAKE_ALERT_DAYS, DIGEST_HOUR,
 } = require('./config');
 
 const CACHE_PATH = path.join(__dirname, 'data', 'appts.json');
@@ -387,6 +387,7 @@ function runHealthVerdict(gridByDay) {
 // count a probe can compare against expectation: appts scraped, candidates
 // found, and how many reminder/digest sends actually happened this run.
 // Counts only — no client names, dates only as YMD, no PHI.
+const { readClassificationState } = require('./lib/classification-state');
 const STATUS_PATH = path.join(__dirname, 'data', 'status', 'latest.json');
 function readRunStatus(statusPath = STATUS_PATH) {
   try { return JSON.parse(fs.readFileSync(statusPath, 'utf8')); }
@@ -416,27 +417,39 @@ function intakeVerdict(cls) {
   return cls.isTelehealth ? 'virtual' : 'in_person';
 }
 
-// The streak counts runs that had appointments to classify but found no intake
-// of ANY format. Keyed on all intakes, not telehealth ones: most BLT intakes
-// are in person (13 of 17 in the 30 days before 2026-11-12), so a
-// telehealth-only denominator was red on every ordinary day and meant nothing.
-function classificationSignal({ candidateCount, intakeCount }, previousStatus = null, threshold = ZERO_INTAKE_ALERT_RUNS) {
-  const zeroIntakeRun = candidateCount > 0 && intakeCount === 0;
-  const previousStreak = Number.isInteger(previousStatus?.zeroIntakeCandidateStreak)
-    ? previousStatus.zeroIntakeCandidateStreak
-    : 0;
-  const zeroIntakeCandidateStreak = zeroIntakeRun ? previousStreak + 1 : 0;
+// Count distinct candidate-bearing service dates since the last detected intake
+// of ANY format. The rolling 30h window revisits dates hourly; empty hours and
+// nonworking days preserve evidence rather than hiding a broken classifier.
+// Legacy hourly counts are deliberately not carried into the new day unit.
+function classificationSignal({ candidateServiceDays, intakeCount }, previousStatus = null, threshold = ZERO_INTAKE_ALERT_DAYS) {
+  const previousDays = previousStatus?.zeroIntakeStreakUnit === 'service_days'
+    && Array.isArray(previousStatus.zeroIntakeCandidateDays)
+    ? previousStatus.zeroIntakeCandidateDays : [];
+  const zeroIntakeCandidateDays = intakeCount > 0 ? []
+    : [...new Set([...previousDays, ...candidateServiceDays])].sort();
+  const zeroIntakeCandidateStreak = zeroIntakeCandidateDays.length;
   const red = zeroIntakeCandidateStreak >= threshold;
   return {
+    zeroIntakeCandidateDays,
     zeroIntakeCandidateStreak,
+    zeroIntakeStreakUnit: 'service_days',
+    zeroIntakeAlertDays: threshold,
     health: red ? 'red' : 'ok',
     alertCode: red ? 'candidates_zero_intakes_streak' : null,
   };
 }
 
+// Use the wrapper's existing red-checkin channel after work and cleanup.
+// Keep Done intact: the daily watcher uses it to confirm teardown finished.
+function reportClassificationHealth(status, env = process.env) {
+  if (status?.alertCode === 'candidates_zero_intakes_streak' && env.BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE) {
+    fs.writeFileSync(env.BLT_INTAKE_DOC_REMINDERS_HEALTH_FILE, 'red\n');
+  }
+}
+
 function writeRunStatus(status, statusPath = STATUS_PATH) {
   try {
-    writeReportAtomically(statusPath, JSON.stringify({ ranAt: new Date().toISOString(), ...status }, null, 2));
+    writeReportAtomically(statusPath, JSON.stringify({ ranAt: new Date().toISOString(), ...readClassificationState(statusPath), ...status }, null, 2));
   } catch (e) {
     console.warn(`[status] could not write run status (${e.message}) — non-fatal`);
   }
@@ -463,7 +476,6 @@ function reportTnSessionFailure(error, statusPath = STATUS_PATH) {
     alertCode: alert.alertCode,
     stage: alert.stage,
     timeoutMs: alert.timeoutMs,
-    zeroIntakeCandidateStreak: 0,
   }, statusPath);
   return true;
 }
@@ -509,6 +521,7 @@ async function main() {
   // the day is empty, just proof they're outside the nag/escalation window.
   const gridByDay = {};
   let totalCandidateCount = 0;
+  const candidateServiceDays = [];
   let inPersonIntakeCount = 0;
   let runStatus = null;
   const rollupErrors = [];
@@ -531,6 +544,7 @@ async function main() {
       const candidates = selectCandidates(grid, d, now, windowEnd);
       console.log(`${d}: ${grid.length} appts, ${candidates.length} in-window scheduled candidate(s)`);
       totalCandidateCount += candidates.length;
+      if (candidates.length) candidateServiceDays.push(d);
 
       for (const a of candidates) {
         // Keyed on client+time only, not clinician: TN can relabel which
@@ -558,12 +572,12 @@ async function main() {
     console.log(`\nVirtual intakes in window: ${intakes.length} (in-person intakes skipped: ${inPersonIntakeCount})`);
     const scrapeHealth = runHealthVerdict(gridByDay);
     const classification = classificationSignal({
-      candidateCount: totalCandidateCount,
+      candidateServiceDays,
       intakeCount: intakes.length + inPersonIntakeCount,
     }, previousStatus);
     const health = classification.health === 'red' ? 'red' : scrapeHealth === 'degraded' ? 'yellow' : 'green';
     if (classification.health === 'red') {
-      console.error(`[health] red: ${totalCandidateCount} scheduled candidate(s), zero intakes of any format, ${classification.zeroIntakeCandidateStreak} consecutive run(s)`);
+      console.error(`[health] red: ${totalCandidateCount} scheduled candidate(s), zero intakes of any format, ${classification.zeroIntakeCandidateStreak} distinct service day(s)`);
     }
 
     // Phase B: per intake, read documents, classify, run the state machine.
@@ -648,6 +662,9 @@ async function main() {
       alertCode: rollupErrors.length ? 'weekly_director_handoff_failed' : classification.alertCode,
       directorHandoffFailureCount: rollupErrors.length,
       zeroIntakeCandidateStreak: classification.zeroIntakeCandidateStreak,
+      zeroIntakeCandidateDays: classification.zeroIntakeCandidateDays,
+      zeroIntakeStreakUnit: classification.zeroIntakeStreakUnit,
+      zeroIntakeAlertDays: classification.zeroIntakeAlertDays,
       workCompleted: true,
     };
     writeRunStatus({ ...runStatus, phase: 'cleanup' });
@@ -655,7 +672,7 @@ async function main() {
   } finally {
     try {
       const released = await session.release();
-      if (runStatus) writeRunStatus({ ...runStatus, phase: 'finished', outcome: rollupErrors.length ? 'failed' : 'ok', lockReleased: true,
+      if (runStatus) writeRunStatus({ ...runStatus, phase: 'finished', outcome: runStatus.health === 'red' ? 'failed' : 'ok', lockReleased: true,
         durationMs: Date.now() - startedAt,
         cleanupReason: released?.cleanupWarning ? 'tn_teardown_recovered' : null,
         cleanupWarning: Boolean(released?.cleanupWarning) });
@@ -668,10 +685,11 @@ async function main() {
     }
   }
   if (rollupErrors.length) throw new AggregateError(rollupErrors, 'Intake weekly handoff failed; all staff notices and reports completed');
+  reportClassificationHealth(runStatus);
   console.log(`\nDone. durationMs=${Date.now() - startedAt} lockReleased=true`);
 }
 
-module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportTnSessionFailure, readRunStatus, classificationSignal, selectCandidates, intakeVerdict, writeReportAtomically, writeRunStatus };
+module.exports = { openTnSession, isTransientPreWorkTimeout, dispatch, saveSentKey, migrateLegacyLedgerKeys, appointmentDecision, digestSuppressible, runHealthVerdict, reportTnSessionFailure, readRunStatus, classificationSignal, reportClassificationHealth, selectCandidates, intakeVerdict, writeReportAtomically, writeRunStatus };
 
 // Print an error, then recurse into anything it bundles: AggregateError.errors
 // (cleanup collects several failures into one) and .cause chains. Without this

@@ -103,7 +103,7 @@ Runs hourly 7am–8pm so day-before nags don't fire overnight. Edit the `StartCa
 | Outcome | Check-in |
 | --- | --- |
 | healthy job exited 0 | green `ok` |
-| 3 completed runs in a row find video candidates but classify zero intakes | status artifact records the streak; no check-in (exit 0) |
+| 6 distinct service dates have scheduled candidates but zero intakes of any format | red status + existing health side-channel after reminder work and teardown; existing red `job_failed` check-in |
 | Chrome launch, TN login, identity read, or login-marker release exceeds its stage deadline | red `job_failed` (pages; status artifact records `tn_browser_launch_timeout`, `tn_login_timeout`, `tn_identity_timeout`, or `tn_login_marker_timeout`) |
 | job exited 0 but a day failed to load / clinician view still filtered | status artifact `scrapeHealth: degraded`; no check-in (exit 0) |
 | job exited non-zero: 30-minute wall-clock timeout, pin/attestation refusal, TN login failure, scrape or send error, crash | red `job_failed` (pages) |
@@ -115,6 +115,30 @@ outside the slot's acceptance window (see `scripts/sentinel-v5/checkin-lib.sh`).
 Producer-side failures are appended to
 `~/.blt-sentinel/logs/blt-intake-doc-reminders-fallback.log`. If the schedule
 in the plist changes, change the fragment row's cron to match.
+
+### Intake classification signal
+
+`data/status/latest.json` records `zeroIntakeCandidateDays`, its count in
+`zeroIntakeCandidateStreak`, `zeroIntakeStreakUnit: "service_days"`, and
+`zeroIntakeAlertDays: 6`. Repeated hourly visits to the same service date count
+once, including tomorrow's appointments inside the 30-hour window. A service
+date means an actual candidate-bearing date, including weekends with work.
+Empty runs preserve the set; any detected intake (in person or telehealth)
+resets it. The legacy hourly count is discarded on upgrade.
+
+The threshold is one above the longest observed normal gap: 130 completed
+all-format runs from Nov 12–22, 2026 showed five candidate-bearing service
+dates (Nov 13–17) without an intake before a positive detection. Earlier logs
+counted only video candidates/intakes and cannot establish all-format gaps.
+This is limited history, not proof that longer normal gaps are impossible.
+At six dates the job still completes staff notices and cleanup, then writes red
+to the wrapper's existing health side-channel for a red Sentinel check-in.
+It retains the completion marker so the daily watcher does not mislabel a
+classification anomaly as a teardown failure. Login/timeout failures preserve
+the accumulated service-date evidence.
+The Hub reminders trust probe and dashboard health script read freshness,
+counts, and scrape health, but do not inspect classification `health` or
+`alertCode`; the local digest does not read status.
 
 ### Daily status email removed (2026-10-07)
 

@@ -10,7 +10,7 @@ test('actual CLI finishes later escalation, confirmation, ledger, report and cle
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'intake-director-main-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'lib'));
-  for (const file of ['index.js', 'config.js', 'lib/ledger.js', 'lib/templates.js', 'lib/finish-run.js', 'lib/director-rollup.js']) {
+  for (const file of ['index.js', 'config.js', 'lib/ledger.js', 'lib/templates.js', 'lib/finish-run.js', 'lib/director-rollup.js', 'lib/classification-state.js']) {
     fs.copyFileSync(path.join(__dirname, '..', file), path.join(root, file));
   }
   fs.writeFileSync(path.join(root, 'preload.js'), `
