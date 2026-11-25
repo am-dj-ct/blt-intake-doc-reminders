@@ -133,8 +133,7 @@ json.dump({"from": sender, "to": [to],
   "text": msg + "\n\nRun log: ~/blt-intake-doc-reminders/data/run.log\nJob: launchctl print gui/$UID/com.blt.intake-doc-reminders\n"},
   open(p, "w"))
 PY
-IDR_WATCH_PAYLOAD="$payload" doppler run -p agent-secrets -c dev -- sh -c \
-  'curl -s --fail --max-time 20 -X POST https://api.resend.com/emails -H "Authorization: Bearer $RESEND_API_KEY" -H "content-type: application/json" -d "@$IDR_WATCH_PAYLOAD"' >/dev/null \
+doppler run -p agent-secrets -c dev -- node "$(dirname "${BASH_SOURCE[0]}")/send-watch-alert.cjs" "$payload" >/dev/null \
   && echo "intake-doc-watch: emailed $TO" || echo "intake-doc-watch: EMAIL FAILED" >&2
 rm -f "$payload"
 exit 1
