@@ -30,7 +30,6 @@ const CLINICIAN_EMAILS = {
   'Brad Corcoran': 'brad@balancedlivingtherapy.com',
   'Stacy Gardea': 'stacyg@balancedlivingtherapy.com',
   'Maggie (Gigi) Ishaq': 'gigi@balancedlivingtherapy.com',
-  'Ally Latham': 'ally@balancedlivingtherapy.com',
   'Taylor Likes': 'taylorl@balancedlivingtherapy.com',
   'Kristi Lyn Reddy': 'kristilyn@balancedlivingtherapy.com',
   'Thomas Matysik': 'thomas@balancedlivingtherapy.com',
