@@ -42,6 +42,7 @@ const CLINICIAN_EMAILS = {
   'Yusuf Rahmani': 'yusuf@balancedlivingtherapy.com',
   'Joshua Forman': 'joshua@balancedlivingtherapy.com',
   'Jesse Dunn': 'jesse@balancedlivingtherapy.com',
+  'Laura Cain': 'laura@balancedlivingtherapy.com',
 };
 
 // ---- TherapyNotes ----
